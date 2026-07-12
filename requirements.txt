@@ -1,0 +1,5 @@
+# Optional but recommended for robust Traditional-to-Simplified conversion.
+# After installation, the project can run offline from this local environment.
+opencc-python-reimplemented>=0.1.7
+
+# Runtime dependency outside Python: ffmpeg with libass/subtitles support for burn mode.
