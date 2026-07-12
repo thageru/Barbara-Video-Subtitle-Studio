@@ -212,7 +212,8 @@ def resolve_ffmpeg(explicit: str | None = None) -> str:
     if env_value:
         candidates.append(env_value)
     candidates.extend(
-        [            "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg",
+        [
+            "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg",
             "/opt/homebrew/bin/ffmpeg",
             "/usr/local/bin/ffmpeg",
             "ffmpeg",

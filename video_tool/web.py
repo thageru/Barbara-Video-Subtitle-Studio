@@ -48,7 +48,7 @@ STATE = AppState()
 
 
 class VideoToolHandler(BaseHTTPRequestHandler):
-    server_version = "VideoProcessDemo/0.4"
+    server_version = "Barbara-Video-Subtitle-Studio/0.5"
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -392,7 +392,7 @@ def render_page(message: str = "") -> str:
         rows = "\n".join(render_job_row(job) for job in STATE.jobs)
     if not rows:
         rows = '<tr><td colspan="9" class="muted" data-i18n data-en="No jobs yet." data-zh="暂无任务。">No jobs yet.</td></tr>'
-    message_html = f'<div id="job-notice" class="notice">{html.escape(message)}</div>' if message else '<div id="job-notice" class="notice" hidden></div>'
+    message_html = f'<div id="job-notice" class="notice" role="status" aria-live="polite">{html.escape(message)}</div>' if message else '<div id="job-notice" class="notice" role="status" aria-live="polite" hidden></div>'
     return PAGE_TEMPLATE.replace("__MESSAGE__", message_html).replace("__ROWS__", rows)
 
 
@@ -468,64 +468,136 @@ PAGE_TEMPLATE = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VideoProcessDemo</title>
+  <title>Barbara-Video-Subtitle-Studio</title>
   <style>
-    :root { --bg: #f5efe4; --ink: #18201c; --muted: #6d746f; --card: #fffaf0; --line: #d7c8ad; --accent: #c24b2c; --accent-2: #1f6b58; --danger: #9c2f25; --shadow: 0 18px 50px rgba(64, 42, 20, .14); }
+    :root {
+      --bg: #f2f4f7; --surface: #ffffff; --surface-soft: #f8fafb; --ink: #17202a;
+      --muted: #66717f; --line: #dce1e7; --line-strong: #c7ced7; --primary: #176b66;
+      --primary-hover: #105854; --amber: #a65f00; --danger: #b42318; --focus: rgba(23, 107, 102, .18);
+      --shadow: 0 10px 26px rgba(23, 32, 42, .08);
+    }
     * { box-sizing: border-box; }
-    body { margin: 0; background: radial-gradient(circle at top left, #f9d999, transparent 34rem), var(--bg); color: var(--ink); font-family: Avenir Next, Charter, Georgia, sans-serif; }
-    main { width: min(1180px, calc(100vw - 32px)); margin: 36px auto; }
-    .hero { display: grid; gap: 10px; margin-bottom: 24px; }
-    .topline { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-    .hero-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
-    h1 { margin: 0; font-size: clamp(34px, 6vw, 68px); letter-spacing: 0; line-height: 1; }
-    h2 { margin: 0 0 12px; }
-    .hero p, .hint, .muted { color: var(--muted); }
-    .panel { background: color-mix(in srgb, var(--card) 92%, white); border: 1px solid var(--line); border-radius: 24px; box-shadow: var(--shadow); padding: 22px; margin-bottom: 22px; }
-    form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-    label { display: grid; gap: 7px; font-weight: 700; }
-    input, select, textarea { width: 100%; border: 1px solid var(--line); border-radius: 14px; padding: 12px 13px; font: inherit; background: #fffdf8; color: var(--ink); }
-    textarea { min-height: 92px; }
-    .path-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 15px; line-height: 1.5; }
+    button, input, select, textarea { font: inherit; }
+    button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+    main { width: min(1240px, calc(100vw - 40px)); margin: 24px auto 56px; }
+    .hero { position: sticky; top: 0; z-index: 20; margin-bottom: 16px; padding: 14px 0; background: rgba(242, 244, 247, .97); border-bottom: 1px solid var(--line); }
+    .topline { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand-mark { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 38px; border-radius: 8px; background: var(--primary); color: white; font-weight: 800; font-size: 15px; }
+    .brand-copy { min-width: 0; }
+    h1 { margin: 0; font-size: 20px; line-height: 1.25; letter-spacing: 0; }
+    .hero p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+    .hero-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+    .service-state { display: inline-flex; align-items: center; gap: 7px; color: #32615e; font-size: 12px; font-weight: 650; white-space: nowrap; }
+    .service-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #2f9e73; box-shadow: 0 0 0 3px rgba(47, 158, 115, .12); }
+    .workflow-nav { position: sticky; top: 67px; z-index: 10; display: flex; gap: 4px; overflow-x: auto; margin: 0 0 16px; padding: 5px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 14px rgba(23, 32, 42, .04); scrollbar-width: none; }
+    .workflow-nav::-webkit-scrollbar { display: none; }
+    .workflow-nav a { display: grid; place-items: center; min-height: 44px; flex: 1 0 auto; padding: 8px 12px; border-radius: 5px; color: var(--muted); text-align: center; text-decoration: none; font-size: 13px; font-weight: 650; }
+    .workflow-nav a:hover, .workflow-nav a:focus-visible { background: var(--surface-soft); color: var(--primary); outline: none; }
+    .workflow-nav a.active { background: #eaf4f2; color: var(--primary); box-shadow: inset 0 0 0 1px #c8e1dc; }
+    h2 { margin: 0 0 18px; font-size: 17px; line-height: 1.35; letter-spacing: 0; }
+    .panel { scroll-margin-top: 130px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 22px; margin-bottom: 14px; box-shadow: 0 1px 2px rgba(23, 32, 42, .03); }
+    .panel:target { border-color: rgba(23, 107, 102, .55); box-shadow: 0 0 0 3px var(--focus); }
+    form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 18px; }
+    label { display: grid; align-content: start; gap: 7px; min-width: 0; color: #34404d; font-size: 13px; font-weight: 650; }
+    input, select, textarea { width: 100%; min-width: 0; min-height: 44px; border: 1px solid var(--line-strong); border-radius: 6px; padding: 10px 11px; background: var(--surface); color: var(--ink); outline: none; transition: border-color .15s ease, box-shadow .15s ease, background .15s ease; }
+    input:hover, select:hover, textarea:hover { border-color: #aeb7c2; }
+    input:focus-visible, select:focus-visible, textarea:focus-visible { border-color: var(--primary); box-shadow: 0 0 0 3px var(--focus); }
+    input::placeholder, textarea::placeholder { color: #929ca8; }
+    input[type="range"] { padding: 8px 0; accent-color: var(--primary); box-shadow: none; border: 0; }
+    textarea { min-height: 96px; resize: vertical; }
+    .path-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
     .full { grid-column: 1 / -1; }
-    .actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-    button { border: 0; border-radius: 999px; padding: 12px 18px; background: var(--accent); color: white; font-weight: 800; cursor: pointer; }
-    button.secondary { background: var(--accent-2); }
-    button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
-    button.danger { background: var(--danger); }
-    .notice { background: #e8f4ee; color: var(--accent-2); border: 1px solid #b8dacd; padding: 12px 14px; border-radius: 8px; margin-bottom: 16px; }
-    .notice.failed { background: #fff0ea; color: var(--danger); border-color: #efc0b1; }
-    .toast { position: fixed; top: 18px; right: 18px; z-index: 20; width: min(420px, calc(100vw - 36px)); box-shadow: var(--shadow); }
-    .error-note { display: none; background: #fff0ea; color: var(--danger); border: 1px solid #efc0b1; padding: 12px 14px; border-radius: 16px; margin-bottom: 16px; }
-    .preview { display: grid; gap: 12px; }
-    .preview img { max-width: 100%; border-radius: 18px; border: 1px solid var(--line); background: #111; }
-    table { width: 100%; border-collapse: collapse; overflow: hidden; }
-    th, td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; vertical-align: top; font-size: 14px; }
-    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
-    code { white-space: pre-wrap; word-break: break-all; font-family: Menlo, Consolas, monospace; font-size: 12px; }
-    .status-done { color: var(--accent-2); font-weight: 800; }
-    .status-failed { color: var(--accent); font-weight: 800; }
-    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-    @media (max-width: 760px) { form, .grid-3 { grid-template-columns: 1fr; } .topline { display: grid; } .hero-actions { justify-content: flex-start; } .path-row { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; } }
+    .actions { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; padding-top: 2px; }
+    button { min-height: 44px; border: 1px solid transparent; border-radius: 6px; padding: 9px 14px; background: var(--primary); color: white; font-weight: 700; cursor: pointer; touch-action: manipulation; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, opacity .15s ease; }
+    button:hover { background: var(--primary-hover); }
+    button:active { opacity: .82; }
+    button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
+    button:disabled { opacity: .5; cursor: wait; }
+    button.secondary { background: #25384a; }
+    button.secondary:hover { background: #192b3c; }
+    button.ghost { background: var(--surface); color: #394653; border-color: var(--line-strong); }
+    button.ghost:hover { background: var(--surface-soft); border-color: #aeb7c2; }
+    button.danger { background: var(--surface); color: var(--danger); border-color: #efc6c2; }
+    button.danger:hover { background: #fff5f4; border-color: #df9e98; }
+    .hint, .muted { color: var(--muted); font-size: 12px; }
+    .notice, .error-note { padding: 11px 13px; border-radius: 6px; margin-bottom: 14px; font-weight: 650; }
+    .notice { background: #edf8f5; color: #17665a; border: 1px solid #b8dfd6; }
+    .notice.failed, .error-note { background: #fff3f2; color: var(--danger); border: 1px solid #f0c5c1; }
+    .toast { position: fixed; top: 18px; right: 18px; z-index: 40; width: min(420px, calc(100vw - 36px)); box-shadow: var(--shadow); }
+    .error-note { display: none; }
+    .preview { display: grid; gap: 12px; margin-top: 18px; }
+    .preview img { display: block; width: min(100%, 880px); border-radius: 6px; border: 1px solid var(--line); background: #101418; }
+    .table-wrap { width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+    table { width: 100%; min-width: 980px; border-collapse: collapse; background: var(--surface); }
+    th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; font-size: 12px; }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: #fafbfc; }
+    th { position: sticky; top: 0; background: var(--surface-soft); color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; letter-spacing: 0; white-space: nowrap; }
+    code { white-space: pre-wrap; word-break: break-word; font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 11px; }
+    .status-queued, .status-running, .status-done, .status-failed { font-weight: 750; white-space: nowrap; }
+    .status-queued { color: #6b7280; }
+    .status-running { color: var(--amber); }
+    .status-done { color: var(--primary); }
+    .status-failed { color: var(--danger); }
+    @media (max-width: 760px) {
+      body { font-size: 16px; }
+      main { width: min(100% - 24px, 1240px); margin-top: 10px; }
+      .hero { padding: 10px 0; }
+      .brand-mark { width: 34px; height: 34px; flex-basis: 34px; }
+      h1 { font-size: 16px; }
+      .hero p, .service-state { display: none; }
+      .hero-actions { gap: 6px; }
+      .hero-actions button { padding: 8px 10px; font-size: 13px; }
+      .workflow-nav { top: 65px; margin-bottom: 10px; }
+      .workflow-nav a { padding: 7px 10px; }
+      .panel { scroll-margin-top: 124px; padding: 16px; border-radius: 6px; }
+      form { grid-template-columns: 1fr; gap: 14px; }
+      .path-row { grid-template-columns: 1fr; }
+      .path-row button { justify-self: start; }
+      .actions { align-items: stretch; }
+      .actions button { flex: 1 1 auto; }
+      .actions .hint { flex-basis: 100%; }
+      input, select, textarea { font-size: 16px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+    }
   </style>
 </head>
 <body>
   <main>
     <section class="hero">
       <div class="topline">
-        <div>
-          <h1 data-i18n data-en="Local Video Subtitle Processor" data-zh="本地视频字幕处理器">本地视频字幕处理器</h1>
-          <p data-i18n data-en="Generate English SRT first, then translate with an OpenAI-compatible endpoint or manually edit Chinese subtitles. Files stay local unless you use an API endpoint." data-zh="先生成英文 SRT，再通过 OpenAI-compatible 端点翻译，或手动编辑中文字幕。除非使用 API 端点，否则文件始终保留在本地。">先生成英文 SRT，再通过 OpenAI-compatible 端点翻译，或手动编辑中文字幕。除非使用 API 端点，否则文件始终保留在本地。</p>
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">VP</div>
+          <div class="brand-copy">
+            <h1 data-i18n data-en="Barbara Video Subtitle Studio" data-zh="Barbara 视频字幕工作台">Barbara 视频字幕工作台</h1>
+            <p>Barbara-Video-Subtitle-Studio</p>
+          </div>
         </div>
         <div class="hero-actions">
+          <span class="service-state" data-i18n data-en="Local service online" data-zh="本地服务在线">本地服务在线</span>
           <button type="button" class="ghost" id="language-toggle" onclick="toggleLanguage()">English</button>
           <button type="button" class="danger" data-i18n data-en="Close Service" data-zh="关闭服务" onclick="shutdownServer()">关闭服务</button>
         </div>
       </div>
     </section>
     __MESSAGE__
-    <div id="client-error" class="error-note"></div>
+    <div id="client-error" class="error-note" role="alert"></div>
 
-    <section class="panel">
+    <nav class="workflow-nav" aria-label="Workflow">
+      <a href="#generate" class="active" aria-current="step" data-i18n data-en="1 Generate" data-zh="1 生成字幕">1 生成字幕</a>
+      <a href="#translate" data-i18n data-en="2 Translate" data-zh="2 翻译字幕">2 翻译字幕</a>
+      <a href="#finalize" data-i18n data-en="3 Preview & Export" data-zh="3 预览输出">3 预览输出</a>
+      <a href="#edit" data-i18n data-en="4 Edit" data-zh="4 在线编辑">4 在线编辑</a>
+      <a href="#jobs" data-i18n data-en="Jobs" data-zh="任务记录">任务记录</a>
+    </nav>
+
+    <section class="panel" id="generate">
       <h2 data-i18n data-en="1. Generate English SRT" data-zh="1. 生成英文 SRT">1. 生成英文 SRT</h2>
       <form method="post" action="/generate-english">
         <label class="full"><span data-i18n data-en="Video file" data-zh="视频文件">视频文件</span>
@@ -553,7 +625,7 @@ PAGE_TEMPLATE = """<!doctype html>
       </form>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="translate">
       <h2 data-i18n data-en="2. Translate English SRT" data-zh="2. 翻译英文 SRT">2. Translate English SRT</h2>
       <form method="post" action="/translate-ai">
         <label class="full"><span data-i18n data-en="English SRT" data-zh="英文 SRT">English SRT</span>
@@ -591,7 +663,7 @@ PAGE_TEMPLATE = """<!doctype html>
       </form>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="finalize">
       <h2 data-i18n data-en="3. Preview and Finalize" data-zh="3. 预览并输出">3. Preview and Finalize</h2>
       <form id="finalize-form" method="post" action="/finalize">
         <label class="full"><span data-i18n data-en="Video file" data-zh="视频文件">Video file</span>
@@ -637,8 +709,8 @@ PAGE_TEMPLATE = """<!doctype html>
       <div class="preview full" id="preview-box"></div>
     </section>
 
-    <section class="panel">
-      <h2 data-i18n data-en="Edit Existing Subtitle" data-zh="在线编辑已有字幕">在线编辑已有字幕</h2>
+    <section class="panel" id="edit">
+      <h2 data-i18n data-en="4. Edit Existing Subtitle" data-zh="4. 在线编辑已有字幕">4. 在线编辑已有字幕</h2>
       <form onsubmit="openExistingEditor(event)">
         <label class="full"><span data-i18n data-en="Subtitle file" data-zh="字幕文件">字幕文件</span>
           <div class="path-row">
@@ -653,12 +725,12 @@ PAGE_TEMPLATE = """<!doctype html>
       </form>
     </section>
 
-    <section class="panel">
-      <h2 data-i18n data-en="Jobs" data-zh="任务列表">Jobs</h2>
-      <table>
+    <section class="panel" id="jobs">
+      <h2 data-i18n data-en="Job History" data-zh="任务记录">任务记录</h2>
+      <div class="table-wrap"><table>
         <thead><tr><th>ID</th><th data-i18n data-en="Status" data-zh="状态">Status</th><th data-i18n data-en="Action" data-zh="操作">Action</th><th data-i18n data-en="Mode" data-zh="模式">Mode</th><th data-i18n data-en="Language" data-zh="语言">Language</th><th data-i18n data-en="Video" data-zh="视频">Video</th><th data-i18n data-en="Subtitle" data-zh="字幕">Subtitle</th><th data-i18n data-en="Output" data-zh="输出">Output</th><th data-i18n data-en="Error" data-zh="错误">Error</th></tr></thead>
         <tbody id="jobs-body">__ROWS__</tbody>
-      </table>
+      </table></div>
     </section>
   </main>
   <script>
@@ -668,14 +740,14 @@ PAGE_TEMPLATE = """<!doctype html>
         renderingPreview: 'Rendering preview...', previewFailed: 'preview failed', noJobs: 'No jobs yet.',
         stopConfirm: 'Stop the local Python web service now?', stoppedTitle: 'Service stopped',
         stoppedBody: 'The local Python listener has been shut down. You can close this tab.', previewAlt: 'subtitle preview frame',
-        jobStarted: 'Job {id} started.', jobDone: 'Job {id} completed.', jobFailed: 'Job {id} failed: {error}', saved: 'Subtitle saved: {path}'
+        jobStarted: 'Job {id} started.', jobDone: 'Job {id} completed.', jobFailed: 'Job {id} failed: {error}', saved: 'Subtitle saved: {path}', submitting: 'Working...'
       },
       zh: {
         switchLabel: 'English', choosing: '选择中...', chooseEnglishFirst: '请先选择英文 SRT。',
         renderingPreview: '正在生成预览...', previewFailed: '预览失败', noJobs: '暂无任务。',
         stopConfirm: '现在停止本地 Python Web 服务吗？', stoppedTitle: '服务已停止',
         stoppedBody: '本地 Python 监听服务已关闭。可以关闭此页面。', previewAlt: '字幕预览帧',
-        jobStarted: '任务 {id} 已开始。', jobDone: '任务 {id} 已完成。', jobFailed: '任务 {id} 失败：{error}', saved: '字幕已保存：{path}'
+        jobStarted: '任务 {id} 已开始。', jobDone: '任务 {id} 已完成。', jobFailed: '任务 {id} 失败：{error}', saved: '字幕已保存：{path}', submitting: '处理中...'
       }
     };
     const CODE_COPY = {
@@ -710,7 +782,7 @@ PAGE_TEMPLATE = """<!doctype html>
       box.hidden = false;
       box.classList.toggle('failed', failed);
       box.classList.toggle('toast', toast);
-      if (toast) setTimeout(() => box.classList.remove('toast'), 6000);
+      if (toast) setTimeout(() => box.classList.remove('toast'), 4500);
     }
 
     function labelFor(group, value) {
@@ -741,6 +813,34 @@ PAGE_TEMPLATE = """<!doctype html>
       const box = document.getElementById('client-error');
       box.textContent = message;
       box.style.display = 'block';
+    }
+
+    function setupFormFeedback() {
+      document.querySelectorAll('form[method="post"]').forEach((form) => {
+        form.addEventListener('submit', () => {
+          const submit = form.querySelector('button[type="submit"]');
+          if (!submit) return;
+          submit.disabled = true;
+          submit.textContent = uiText('submitting');
+        });
+      });
+    }
+
+    function setupWorkflowNavigation() {
+      const links = [...document.querySelectorAll('.workflow-nav a')];
+      const sections = links.map((link) => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+      if (!links.length || !sections.length || !('IntersectionObserver' in window)) return;
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (!visible) return;
+        links.forEach((link) => {
+          const active = link.getAttribute('href') === `#${visible.target.id}`;
+          link.classList.toggle('active', active);
+          if (active) link.setAttribute('aria-current', 'step');
+          else link.removeAttribute('aria-current');
+        });
+      }, { rootMargin: '-130px 0px -55% 0px', threshold: [0, .25, .6] });
+      sections.forEach((section) => observer.observe(section));
     }
 
     async function choosePath(button, endpoint, inputId, updateDefaults, type) {
@@ -902,6 +1002,8 @@ PAGE_TEMPLATE = """<!doctype html>
     const pageParams = new URLSearchParams(window.location.search);
     if (watchedJobId) showNotice(formatText('jobStarted', { id: watchedJobId }));
     if (pageParams.get('saved')) showNotice(formatText('saved', { path: pageParams.get('saved') }));
+    setupFormFeedback();
+    setupWorkflowNavigation();
     applyLanguage(currentLanguage);
     refreshJobs();
     setInterval(refreshJobs, 5000);
@@ -917,25 +1019,59 @@ EDITOR_TEMPLATE = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Manual Subtitle Translation</title>
   <style>
-    body { margin: 0; background: #f5efe4; color: #18201c; font-family: Avenir Next, Charter, Georgia, sans-serif; }
-    main { width: min(1280px, calc(100vw - 32px)); margin: 28px auto; }
-    .panel { background: #fffaf0; border: 1px solid #d7c8ad; border-radius: 22px; padding: 20px; box-shadow: 0 18px 50px rgba(64, 42, 20, .14); }
-    .top { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
-    .top-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    input, select, textarea { width: 100%; border: 1px solid #d7c8ad; border-radius: 12px; padding: 10px; font: inherit; background: #fffdf8; }
-    textarea { min-width: 320px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-    th, td { border-bottom: 1px solid #d7c8ad; padding: 8px; vertical-align: top; }
-    th { color: #6d746f; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
-    code { white-space: pre-wrap; word-break: break-all; font-family: Menlo, Consolas, monospace; font-size: 12px; }
-    button { border: 0; border-radius: 999px; padding: 12px 18px; background: #c24b2c; color: white; font-weight: 800; cursor: pointer; }
-    button.ghost { background: transparent; color: #18201c; border: 1px solid #d7c8ad; }
-    a { color: #1f6b58; font-weight: 800; }
+    :root { --bg: #f2f4f7; --surface: #fff; --surface-soft: #f8fafb; --ink: #17202a; --muted: #66717f; --line: #dce1e7; --line-strong: #c7ced7; --primary: #176b66; --primary-hover: #105854; --focus: rgba(23, 107, 102, .18); }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 15px; line-height: 1.5; }
+    main { width: min(1400px, calc(100vw - 40px)); margin: 24px auto 48px; }
+    .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 22px; box-shadow: 0 1px 2px rgba(23, 32, 42, .03); }
+    .top { display: flex; justify-content: space-between; gap: 20px; align-items: center; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+    h1 { margin: 0; font-size: 21px; line-height: 1.3; letter-spacing: 0; }
+    .top p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    .top-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .file-path { margin: 16px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); color: var(--muted); }
+    .file-path strong { color: #34404d; }
+    .settings { display: grid; grid-template-columns: minmax(0, 2fr) minmax(180px, 1fr) minmax(180px, 1fr); gap: 16px; margin-bottom: 18px; }
+    label { display: grid; gap: 7px; min-width: 0; color: #34404d; font-size: 13px; font-weight: 650; }
+    input, select, textarea { width: 100%; min-width: 0; min-height: 44px; border: 1px solid var(--line-strong); border-radius: 6px; padding: 10px 11px; font: inherit; background: var(--surface); color: var(--ink); outline: none; transition: border-color .15s ease, box-shadow .15s ease; }
+    input:hover, select:hover, textarea:hover { border-color: #aeb7c2; }
+    input:focus-visible, select:focus-visible, textarea:focus-visible { border-color: var(--primary); box-shadow: 0 0 0 3px var(--focus); }
+    textarea { min-width: 280px; min-height: 82px; resize: vertical; line-height: 1.55; }
+    .editor-table-wrap { width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+    table { width: 100%; min-width: 1080px; border-collapse: collapse; table-layout: fixed; }
+    th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; vertical-align: top; text-align: left; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: #fafbfc; }
+    th { position: sticky; top: 0; z-index: 1; background: var(--surface-soft); color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; letter-spacing: 0; }
+    th:nth-child(1) { width: 54px; }
+    th:nth-child(2) { width: 230px; }
+    th:nth-child(3), th:nth-child(4) { width: calc((100% - 284px) / 2); }
+    code { white-space: pre-wrap; word-break: break-word; font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 11px; }
+    button, .back-link { display: inline-grid; place-items: center; min-height: 44px; border: 1px solid transparent; border-radius: 6px; padding: 9px 14px; font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; touch-action: manipulation; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, opacity .15s ease; }
+    button { background: var(--primary); color: white; }
+    button:hover { background: var(--primary-hover); }
+    button:active, .back-link:active { opacity: .82; }
+    button:focus-visible, .back-link:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
+    button:disabled { opacity: .5; cursor: wait; }
+    button.ghost, .back-link { background: var(--surface); color: #394653; border-color: var(--line-strong); }
+    button.ghost:hover, .back-link:hover { background: var(--surface-soft); border-color: #aeb7c2; }
+    .save-row { position: sticky; bottom: 0; display: flex; justify-content: flex-end; margin: 0; padding: 14px 0 0; background: var(--surface); border-top: 1px solid var(--line); }
+    @media (max-width: 760px) {
+      body { font-size: 16px; }
+      main { width: calc(100vw - 20px); margin: 10px auto 24px; }
+      .panel { padding: 14px; border-radius: 6px; }
+      .top { align-items: flex-start; }
+      h1 { font-size: 18px; }
+      .top p { display: none; }
+      .settings { grid-template-columns: 1fr; gap: 12px; }
+      input, select, textarea { font-size: 16px; }
+      .file-path { font-size: 13px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: .01ms !important; } }
   </style>
 </head>
 <body>
   <main>
-    <form class="panel" method="post" action="/save-manual">
+    <form class="panel" method="post" action="/save-manual" onsubmit="setSavingState()">
       <div class="top">
         <div>
           <h1 data-i18n data-en="__EDITOR_TITLE_EN__" data-zh="__EDITOR_TITLE_ZH__">__EDITOR_TITLE_ZH__</h1>
@@ -943,25 +1079,27 @@ EDITOR_TEMPLATE = """<!doctype html>
         </div>
         <div class="top-actions">
           <button type="button" class="ghost" id="language-toggle" onclick="toggleLanguage()">English</button>
-          <a href="/" data-i18n data-en="Back" data-zh="返回">返回</a>
+          <a class="back-link" href="/" data-i18n data-en="Back" data-zh="返回">返回</a>
         </div>
       </div>
-      <p><strong data-i18n data-en="Subtitle:" data-zh="字幕文件：">字幕文件：</strong> <code>__SOURCE__</code></p>
+      <p class="file-path"><strong data-i18n data-en="Subtitle:" data-zh="字幕文件：">字幕文件：</strong> <code>__SOURCE__</code></p>
       <input type="hidden" name="source_srt" value="__SOURCE__">
-      <label><span data-i18n data-en="Output SRT" data-zh="输出 SRT">Output SRT</span>
-        <input name="output_srt" value="__TARGET__" required>
-      </label>
-      <label><span data-i18n data-en="Target language" data-zh="目标语言">Target language</span>
-        <select name="target_language"><option value="zh-Hans" data-i18n data-en="zh-Hans - Simplified Chinese" data-zh="zh-Hans - 简体中文">zh-Hans - Simplified Chinese</option><option value="en" data-i18n data-en="en - English" data-zh="en - 英文">en - English</option></select>
-      </label>
-      <label><span data-i18n data-en="Export format" data-zh="导出格式">Export format</span>
-        <select name="format"><option value="pure" data-i18n data-en="Pure translated subtitle" data-zh="纯翻译字幕">Pure translated subtitle</option><option value="bilingual" data-i18n data-en="Bilingual: English + translation" data-zh="双语：英文 + 译文">Bilingual: English + translation</option></select>
-      </label>
-      <table>
+      <div class="settings">
+        <label><span data-i18n data-en="Output SRT" data-zh="输出 SRT">Output SRT</span>
+          <input name="output_srt" value="__TARGET__" required>
+        </label>
+        <label><span data-i18n data-en="Target language" data-zh="目标语言">Target language</span>
+          <select name="target_language"><option value="zh-Hans" data-i18n data-en="zh-Hans - Simplified Chinese" data-zh="zh-Hans - 简体中文">zh-Hans - Simplified Chinese</option><option value="en" data-i18n data-en="en - English" data-zh="en - 英文">en - English</option></select>
+        </label>
+        <label><span data-i18n data-en="Export format" data-zh="导出格式">Export format</span>
+          <select name="format"><option value="pure" data-i18n data-en="Pure translated subtitle" data-zh="纯翻译字幕">Pure translated subtitle</option><option value="bilingual" data-i18n data-en="Bilingual: English + translation" data-zh="双语：英文 + 译文">Bilingual: English + translation</option></select>
+        </label>
+      </div>
+      <div class="editor-table-wrap"><table>
         <thead><tr><th>#</th><th data-i18n data-en="Timecode" data-zh="时间码">Timecode</th><th data-i18n data-en="Current text" data-zh="当前文本">当前文本</th><th data-i18n data-en="Edited text" data-zh="编辑后文本">编辑后文本</th></tr></thead>
         <tbody>__ROWS__</tbody>
-      </table>
-      <p><button type="submit" data-i18n data-en="Save SRT" data-zh="保存 SRT">Save SRT</button></p>
+      </table></div>
+      <p class="save-row"><button id="save-button" type="submit" data-i18n data-en="Save SRT" data-zh="保存 SRT">Save SRT</button></p>
     </form>
   </main>
   <script>
@@ -983,6 +1121,11 @@ EDITOR_TEMPLATE = """<!doctype html>
     function toggleLanguage() {
       applyLanguage(currentLanguage === 'zh' ? 'en' : 'zh');
     }
+    function setSavingState() {
+      const button = document.getElementById('save-button');
+      button.disabled = true;
+      button.textContent = currentLanguage === 'zh' ? '保存中...' : 'Saving...';
+    }
     applyLanguage(currentLanguage);
   </script>
 </body>
@@ -992,7 +1135,7 @@ EDITOR_TEMPLATE = """<!doctype html>
 def run(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = False) -> None:
     server = ThreadingHTTPServer((host, port), VideoToolHandler)
     url = f"http://{host}:{port}/"
-    print(f"VideoProcessDemo web UI: {url}")
+    print(f"Barbara-Video-Subtitle-Studio web UI: {url}")
     print("Press Ctrl+C to stop, or click Close Service in the browser.")
     if open_browser:
         webbrowser.open(url)
@@ -1000,4 +1143,4 @@ def run(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = False) -
         server.serve_forever()
     finally:
         server.server_close()
-        print("VideoProcessDemo web UI stopped.")
+        print("Barbara-Video-Subtitle-Studio web UI stopped.")

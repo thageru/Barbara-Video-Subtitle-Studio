@@ -1,4 +1,4 @@
-# VideoProcessDemo
+# Barbara-Video-Subtitle-Studio
 
 本项目是一个本地视频字幕处理工具，提供两个入口：
 
@@ -25,20 +25,13 @@
 - `video_tool/processor.py`：ffmpeg 预览、外挂字幕复制、硬字幕烧录；预览和硬烧录共用同一套字幕样式。
 - `video_tool/web.py`：本地 Web UI、任务队列、文件选择、预览帧和关闭服务。
 - `video_tool/cli.py`：命令行入口。
+- `docs/design-system.md`：Web 工作台的颜色、间距、交互和响应式设计约束。
 
 ## 离线运行前提
 
 字幕生成依赖本机 `whisperkit-cli`。硬字幕预览/烧录依赖支持 `subtitles`/`libass` 的 `ffmpeg`。
 
-本机已验证的候选路径包括：
-
-```bash
-/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg
-/opt/homebrew/bin/ffmpeg
-/usr/local/bin/ffmpeg
-```
-
-如果你的 `ffmpeg` 不在这些路径，运行前设置：
+请确保 `ffmpeg` 可从 `PATH` 使用。如果安装在其他位置，运行前设置：
 
 ```bash
 export FFMPEG_BIN=/path/to/ffmpeg

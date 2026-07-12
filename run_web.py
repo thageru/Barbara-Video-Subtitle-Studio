@@ -7,7 +7,7 @@ from video_tool.web import run
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the local VideoProcessDemo web UI.")
+    parser = argparse.ArgumentParser(description="Run the local Barbara-Video-Subtitle-Studio web UI.")
     parser.add_argument("--host", default="127.0.0.1", help="bind host; keep 127.0.0.1 for local-only use")
     parser.add_argument("--port", default=8765, type=int, help="bind port")
     parser.add_argument("--open", action="store_true", help="open the default browser")

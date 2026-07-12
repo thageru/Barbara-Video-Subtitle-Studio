@@ -35,6 +35,8 @@ class OutputAndEditorTests(unittest.TestCase):
 
             self.assertIn("在线编辑已有字幕", page)
             self.assertIn(">Original text</textarea>", page)
+            self.assertIn('class="editor-table-wrap"', page)
+            self.assertIn("setSavingState", page)
             self.assertEqual(media_stem(subtitle), "lesson")
 
     def test_manual_save_preserves_timing_and_simplifies_chinese(self) -> None:
@@ -53,7 +55,11 @@ class OutputAndEditorTests(unittest.TestCase):
 
     def test_home_page_contains_live_status_and_online_editor(self) -> None:
         page = render_page()
+        self.assertIn("Barbara-Video-Subtitle-Studio", page)
         self.assertIn('id="job-notice"', page)
+        self.assertIn('aria-live="polite"', page)
+        self.assertIn('class="workflow-nav"', page)
+        self.assertIn("prefers-reduced-motion", page)
         self.assertIn("watchedJobId", page)
         self.assertIn("在线编辑已有字幕", page)
 
