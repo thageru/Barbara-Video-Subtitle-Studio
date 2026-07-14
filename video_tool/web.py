@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import mimetypes
+import re
 import subprocess
 import threading
 import traceback
@@ -14,11 +15,16 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from .chinese import to_simplified_chinese
-from .processor import ProcessingError, ProcessingRequest, SubtitleStyle, process_video, render_subtitle_preview
+from .processor import VIDEO_EXTENSIONS, ProcessingError, ProcessingRequest, SubtitleStyle, process_video, render_subtitle_preview
 from .paths import organized_output_path
 from .srt import default_translated_path, parse_srt, write_manual_translation
 from .transcriber import SubtitleGenerationRequest, generate_subtitles
-from .translator import TranslationRequest, translate_srt_with_api
+from .translator import (
+    TranslationRequest,
+    build_webchat_prompt,
+    merge_webchat_translation,
+    translate_srt_with_api,
+)
 
 
 @dataclass
@@ -84,6 +90,14 @@ class VideoToolHandler(BaseHTTPRequestHandler):
         if parsed.path == "/choose-directory":
             self._send_json(_choose_directory())
             return
+        if parsed.path == "/media":
+            query = parse_qs(parsed.query)
+            self._handle_media(query.get("path", [""])[0])
+            return
+        if parsed.path == "/subtitle-cues":
+            query = parse_qs(parsed.query)
+            self._handle_subtitle_cues(query.get("path", [""])[0])
+            return
         if parsed.path == "/edit":
             query = parse_qs(parsed.query)
             source = query.get("source", [""])[0]
@@ -119,7 +133,13 @@ class VideoToolHandler(BaseHTTPRequestHandler):
         if parsed.path == "/save-manual":
             self._handle_save_manual(data)
             return
-        if parsed.path in {"/generate-english", "/translate-ai", "/finalize", "/process"}:
+        if parsed.path == "/webchat-prompt":
+            self._handle_webchat_prompt(data)
+            return
+        if parsed.path == "/import-translation":
+            self._handle_import_translation(data)
+            return
+        if parsed.path in {"/generate-english", "/translate-ai", "/finalize", "/process", "/paste-translate-burn"}:
             job = self._create_job(parsed.path, data)
             with STATE.lock:
                 STATE.jobs.insert(0, job)
@@ -149,6 +169,7 @@ class VideoToolHandler(BaseHTTPRequestHandler):
             "/translate-ai": "translate-ai",
             "/finalize": "finalize",
             "/process": "legacy-process",
+            "/paste-translate-burn": "paste-translate-burn",
         }[path]
         with STATE.lock:
             job_id = STATE.next_id
@@ -178,7 +199,37 @@ class VideoToolHandler(BaseHTTPRequestHandler):
                 STATE.previews[preview_id] = path
             self._send_json({"ok": True, "url": f"/preview/{preview_id}"})
         except Exception as exc:
-            self._send_json({"ok": False, "error": str(exc)})
+            self._send_json({"ok": False, "error": str(exc)}, status=400)
+
+    def _handle_media(self, raw_path: str) -> None:
+        try:
+            path = Path(raw_path).expanduser().resolve()
+            if not path.is_file():
+                raise ProcessingError(f"video file does not exist: {path}")
+            if path.suffix.lower() not in VIDEO_EXTENSIONS:
+                raise ProcessingError(f"unsupported video extension: {path.suffix}")
+            self._send_media_file(path)
+        except Exception as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=400)
+
+    def _handle_subtitle_cues(self, raw_path: str) -> None:
+        try:
+            path = Path(raw_path).expanduser().resolve()
+            if not path.is_file():
+                raise ProcessingError(f"subtitle file does not exist: {path}")
+            cues = []
+            for entry in parse_srt(path):
+                start_text, end_text = entry.timecode.split("-->", 1)
+                cues.append(
+                    {
+                        "start": _srt_timestamp_seconds(start_text.strip()),
+                        "end": _srt_timestamp_seconds(end_text.strip().split()[0]),
+                        "text": entry.text,
+                    }
+                )
+            self._send_json({"ok": True, "cues": cues})
+        except Exception as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=400)
 
     def _handle_save_manual(self, data: dict[str, list[str]]) -> None:
         try:
@@ -189,7 +240,21 @@ class VideoToolHandler(BaseHTTPRequestHandler):
             bilingual = _value(data, "format") == "bilingual"
             entries = parse_srt(source)
             translations = data.get("translation", [])
-            if len(entries) != len(translations):
+            submitted_indexes = data.get("entry_index", [])
+            if submitted_indexes:
+                if len(submitted_indexes) != len(translations):
+                    raise ProcessingError(
+                        f"editor row count mismatch: indexes={len(submitted_indexes)}, translations={len(translations)}"
+                    )
+                by_index = {str(entry.index): entry for entry in entries}
+                selected_entries = []
+                for raw_index in submitted_indexes:
+                    entry = by_index.get(raw_index.strip())
+                    if entry is None:
+                        raise ProcessingError(f"unknown subtitle entry index: {raw_index}")
+                    selected_entries.append(entry)
+                entries = selected_entries
+            elif len(entries) != len(translations):
                 raise ProcessingError(f"translation count mismatch: expected {len(entries)}, got {len(translations)}")
             if target_language == "zh-Hans":
                 translations = [to_simplified_chinese(item) for item in translations]
@@ -199,6 +264,43 @@ class VideoToolHandler(BaseHTTPRequestHandler):
             self.end_headers()
         except Exception as exc:
             self._send_html(render_error_page(str(exc), traceback.format_exc()))
+
+    def _handle_webchat_prompt(self, data: dict[str, list[str]]) -> None:
+        try:
+            prompt, entries, batches = build_webchat_prompt(
+                Path(_value(data, "source_srt")),
+                target_language=_value(data, "target_language") or "zh-Hans",
+                chunk_size=_int_value(data, "chunk_size", 20),
+                glossary=_value(data, "glossary"),
+            )
+            self._send_json({"ok": True, "prompt": prompt, "entries": entries, "batches": batches})
+        except Exception as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=400)
+
+    def _handle_import_translation(self, data: dict[str, list[str]]) -> None:
+        try:
+            source = Path(_value(data, "source_srt")).expanduser().resolve()
+            requested_text = _value(data, "output_srt")
+            requested = Path(requested_text).expanduser() if requested_text else default_translated_path(source)
+            output = organized_output_path(source, requested, requested.name)
+            result = merge_webchat_translation(
+                source_srt=source,
+                response_text=_value(data, "response_text"),
+                output_srt=output,
+                target_language=_value(data, "target_language") or "zh-Hans",
+                chunk_size=_int_value(data, "chunk_size", 20),
+                glossary=_value(data, "glossary"),
+            )
+            self._send_json(
+                {
+                    "ok": True,
+                    "output_srt": str(result.output_srt),
+                    "entries": result.entries,
+                    "batches": result.batches,
+                }
+            )
+        except Exception as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=400)
 
     def _send_html(self, body: str) -> None:
         encoded = body.encode("utf-8")
@@ -223,6 +325,52 @@ class VideoToolHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_media_file(self, path: Path) -> None:
+        size = path.stat().st_size
+        start = 0
+        end = max(0, size - 1)
+        status = 200
+        range_header = self.headers.get("Range", "")
+        if range_header:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+            if not match:
+                self.send_error(416)
+                return
+            start_text, end_text = match.groups()
+            if start_text:
+                start = int(start_text)
+                end = min(int(end_text), end) if end_text else end
+            elif end_text:
+                length = min(int(end_text), size)
+                start = size - length
+            if start < 0 or start > end or start >= size:
+                self.send_error(416)
+                return
+            status = 206
+
+        content_length = end - start + 1
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(content_length))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+
+        with path.open("rb") as media:
+            media.seek(start)
+            remaining = content_length
+            while remaining > 0:
+                chunk = media.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                remaining -= len(chunk)
 
 
 def _choose_file(purpose: str) -> dict[str, str | bool]:
@@ -274,6 +422,8 @@ def _run_job(job_id: int, data: dict[str, list[str]]) -> None:
             _run_translate_ai(job_id, data)
         elif job.action == "finalize":
             _run_finalize(job_id, data)
+        elif job.action == "paste-translate-burn":
+            _run_paste_translate_burn(job_id, data)
         else:
             _run_legacy_process(job_id, data)
     except (ProcessingError, OSError, ValueError) as exc:
@@ -326,11 +476,13 @@ def _run_translate_ai(job_id: int, data: dict[str, list[str]]) -> None:
 
 
 def _run_finalize(job_id: int, data: dict[str, list[str]]) -> None:
+    mode = _value(data, "mode") or "burn"
+    subtitle_text = _value(data, "subtitle_path")
     result = process_video(
         ProcessingRequest(
             video_path=Path(_value(data, "video_path")),
-            subtitle_path=Path(_value(data, "subtitle_path")),
-            mode=_value(data, "mode") or "burn",
+            subtitle_path=Path(subtitle_text) if subtitle_text else None,
+            mode=mode,
             language_code=_value(data, "target_language") or "zh-Hans",
             output_path=Path(_value(data, "output_video")).expanduser() if _value(data, "output_video") else None,
             style=_style_from_form(data),
@@ -338,6 +490,41 @@ def _run_finalize(job_id: int, data: dict[str, list[str]]) -> None:
     )
     _update_job(job_id, status="done", output_path=str(result.output_path), command=result.command)
 
+
+def _run_paste_translate_burn(job_id: int, data: dict[str, list[str]]) -> None:
+    source = Path(_value(data, "source_srt"))
+    requested_srt = Path(_value(data, "output_srt"))
+    output_srt = organized_output_path(source, requested_srt, requested_srt.name)
+    video = Path(_value(data, "video_path"))
+    requested_video = Path(_value(data, "output_video")) if _value(data, "output_video") else None
+    default_video = f"{video.stem}.zh-Hans.hardsub.mp4"
+    output_video = organized_output_path(video, requested_video, default_video)
+    merged = merge_webchat_translation(
+        source_srt=source,
+        response_text=_value(data, "response_text"),
+        output_srt=output_srt,
+        target_language=_value(data, "target_language") or "zh-Hans",
+        chunk_size=_int_value(data, "chunk_size", 20),
+        glossary=_value(data, "glossary"),
+    )
+    result = process_video(
+        ProcessingRequest(
+            video_path=video,
+            subtitle_path=merged.output_srt,
+            mode="burn",
+            language_code=_value(data, "target_language") or "zh-Hans",
+            output_path=output_video,
+            style=_style_from_form(data),
+        )
+    )
+    _update_job(
+        job_id,
+        status="done",
+        subtitle_path=str(merged.output_srt),
+        output_path=str(result.output_path),
+        command=result.command,
+        details=f"entries={merged.entries}, batches={merged.batches}",
+    )
 
 def _run_legacy_process(job_id: int, data: dict[str, list[str]]) -> None:
     languages = [item.strip() for item in data.get("languages", []) if item.strip()] or ["zh-Hans"]
@@ -397,6 +584,14 @@ def _float_value(data: dict[str, list[str]], name: str, default: float) -> float
         return default
 
 
+def _srt_timestamp_seconds(value: str) -> float:
+    match = re.fullmatch(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})", value.strip())
+    if not match:
+        raise ProcessingError(f"invalid SRT timestamp: {value}")
+    hours, minutes, seconds, milliseconds = (int(part) for part in match.groups())
+    return hours * 3600 + minutes * 60 + seconds + milliseconds / 1000.0
+
+
 def _style_from_form(data: dict[str, list[str]]) -> SubtitleStyle:
     return SubtitleStyle(font_size=_int_value(data, "font_size", 22), y_percent=_float_value(data, "subtitle_y", 2.0))
 
@@ -407,6 +602,9 @@ def _job_details(action: str, data: dict[str, list[str]]) -> str:
         model = _value(data, "model")
         return f"model={model}, base_url={base_url}, api_key={'set' if _value(data, 'api_key') else 'empty'}"
     if action == "finalize":
+        mode = _value(data, "mode") or "burn"
+        if mode in {"strip", "strip-soft", "remove-soft"}:
+            return "remove embedded soft subtitle streams; video/audio copied without re-encoding"
         return f"font_size={_value(data, 'font_size') or '22'}, subtitle_y={_value(data, 'subtitle_y') or '2'}%"
     return ""
 
@@ -433,10 +631,11 @@ def render_editor(source: str, target: str, prefill: bool = False) -> str:
     for entry in entries:
         rows.append(
             "<tr>"
-            f"<td>{entry.index}</td>"
+            f"<td><input type=\"hidden\" name=\"entry_index\" value=\"{entry.index}\"><span class=\"row-number\">{entry.index}</span></td>"
             f"<td><code>{html.escape(entry.timecode)}</code></td>"
             f"<td>{html.escape(entry.text).replace(chr(10), '<br>')}</td>"
             f"<td><textarea name=\"translation\" rows=\"3\" data-i18n-placeholder data-en=\"Enter subtitle text\" data-zh=\"填写字幕文本\">{html.escape(entry.text) if prefill else ''}</textarea></td>"
+            "<td><button type=\"button\" class=\"danger ghost\" onclick=\"removeEntry(this)\" data-i18n data-en=\"Delete\" data-zh=\"删除\">删除</button></td>"
             "</tr>"
         )
     return EDITOR_TEMPLATE.replace("__SOURCE__", html.escape(str(source_path))).replace(
@@ -537,6 +736,7 @@ PAGE_TEMPLATE = """<!doctype html>
     .actions { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; padding-top: 2px; }
     button { min-height: 44px; border: 1px solid transparent; border-radius: 6px; padding: 9px 14px; background: var(--primary); color: white; font-weight: 700; cursor: pointer; touch-action: manipulation; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, opacity .15s ease; }
     button:hover { background: var(--primary-hover); }
+    button.danger { color: var(--danger); }
     button:active { opacity: .82; }
     button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
     button:disabled { opacity: .5; cursor: wait; }
@@ -651,7 +851,7 @@ PAGE_TEMPLATE = """<!doctype html>
 
     <section class="panel" id="translate">
       <h2 data-i18n data-en="2. Translate English SRT" data-zh="2. 翻译英文 SRT">2. Translate English SRT</h2>
-      <form method="post" action="/translate-ai">
+      <form id="translation-form" onsubmit="importTranslatedSrt(event)">
         <label class="full"><span data-i18n data-en="English SRT" data-zh="英文 SRT">English SRT</span>
           <div class="path-row">
             <input id="source-srt" name="source_srt" placeholder="Choose .en.srt" data-i18n-placeholder data-en="Choose .en.srt" data-zh="选择 .en.srt" required oninput="fillSrtDefaults(this.value)">
@@ -662,27 +862,18 @@ PAGE_TEMPLATE = """<!doctype html>
           <input id="output-srt" name="output_srt" placeholder="Defaults to source.zh-Hans.srt" data-i18n-placeholder data-en="Defaults to source.zh-Hans.srt" data-zh="默认输出 source.zh-Hans.srt" required>
         </label>
         <label><span data-i18n data-en="Target language" data-zh="目标语言">Target language</span>
-          <select name="target_language"><option value="zh-Hans" data-i18n data-en="zh-Hans - Simplified Chinese" data-zh="zh-Hans - 简体中文">zh-Hans - Simplified Chinese</option><option value="en" data-i18n data-en="en - English" data-zh="en - 英文">en - English</option></select>
+          <select id="translation-language" name="target_language"><option value="zh-Hans" data-i18n data-en="zh-Hans - Simplified Chinese" data-zh="zh-Hans - 简体中文">zh-Hans - Simplified Chinese</option><option value="en" data-i18n data-en="en - English" data-zh="en - 英文">en - English</option></select>
         </label>
-        <label><span data-i18n data-en="Base URL" data-zh="接口地址 Base URL">Base URL</span>
-          <input name="base_url" placeholder="https://api.openai.com/v1 or local /v1" data-i18n-placeholder data-en="https://api.openai.com/v1 or local /v1" data-zh="https://api.openai.com/v1 或本地 /v1">
-        </label>
-        <label><span data-i18n data-en="API Key" data-zh="API Key">API Key</span>
-          <input name="api_key" type="password" autocomplete="off" placeholder="Optional for local endpoints" data-i18n-placeholder data-en="Optional for local endpoints" data-zh="本地端点可留空">
-        </label>
-        <label><span data-i18n data-en="Model" data-zh="模型">Model</span>
-          <input name="model" value="gpt-4.1-mini">
-        </label>
-        <label><span data-i18n data-en="Batch size" data-zh="批次大小">Batch size</span>
-          <input name="chunk_size" type="number" min="5" max="50" value="20">
-        </label>
-        <label class="full"><span data-i18n data-en="Glossary / translation notes" data-zh="术语表 / 翻译说明">Glossary / translation notes</span>
+        <label class="full"><span data-i18n data-en="Glossary / translation style" data-zh="术语表 / 翻译风格要求">Glossary / translation style</span>
           <textarea name="glossary" placeholder="Optional glossary. Example: PYP=小学项目, transdisciplinary=超学科" data-i18n-placeholder data-en="Optional glossary. Example: PYP=小学项目, transdisciplinary=超学科" data-zh="可选术语表。例如：PYP=小学项目，transdisciplinary=超学科"></textarea>
         </label>
+        <label class="full"><span data-i18n data-en="Paste complete translated SRT" data-zh="粘贴翻译后的完整 SRT">Paste complete translated SRT</span>
+          <textarea name="response_text" rows="12" placeholder="Paste the complete SRT returned by the other AI" data-i18n-placeholder data-en="Paste the complete SRT returned by the other AI" data-zh="粘贴其他 AI 返回的完整 SRT" required></textarea>
+        </label>
         <div class="actions full">
-          <button type="submit" data-i18n data-en="AI Translate" data-zh="AI 翻译">AI Translate</button>
+          <button type="button" class="secondary" onclick="copyTranslationPrompt()" data-i18n data-en="Create & Copy Translation Prompt" data-zh="生成并复制翻译提示词">Create & Copy Translation Prompt</button>
+          <button type="submit" data-i18n data-en="Create Translated SRT" data-zh="生成目标语言 SRT">Create Translated SRT</button>
           <button type="button" class="ghost" data-i18n data-en="Manual Edit Table" data-zh="手动编辑表格" onclick="openManualEditor()">Manual Edit Table</button>
-          <span class="hint" data-i18n data-en="Manual edit never calls any API." data-zh="手动编辑不会调用任何 API。">Manual edit never calls any API.</span>
         </div>
       </form>
     </section>
@@ -764,14 +955,16 @@ PAGE_TEMPLATE = """<!doctype html>
         renderingPreview: 'Rendering preview...', previewFailed: 'preview failed', noJobs: 'No jobs yet.',
         stopConfirm: 'Stop the local Python web service now?', stoppedTitle: 'Service stopped',
         stoppedBody: 'The local Python listener has been shut down. You can close this tab.', previewAlt: 'subtitle preview frame',
-        jobStarted: 'Job {id} started.', jobDone: 'Job {id} completed.', jobFailed: 'Job {id} failed: {error}', saved: 'Subtitle saved: {path}', submitting: 'Working...'
+        jobStarted: 'Job {id} started.', jobDone: 'Job {id} completed.', jobFailed: 'Job {id} failed: {error}', saved: 'Subtitle saved: {path}', submitting: 'Working...',
+        promptCopied: 'Translation template and {count} English subtitles copied.', imported: 'Translated SRT created: {path}'
       },
       zh: {
         switchLabel: 'English', choosing: '选择中...', chooseEnglishFirst: '请先选择英文 SRT。',
         renderingPreview: '正在生成预览...', previewFailed: '预览失败', noJobs: '暂无任务。',
         stopConfirm: '现在停止本地 Python Web 服务吗？', stoppedTitle: '服务已停止',
         stoppedBody: '本地 Python 监听服务已关闭。可以关闭此页面。', previewAlt: '字幕预览帧',
-        jobStarted: '任务 {id} 已开始。', jobDone: '任务 {id} 已完成。', jobFailed: '任务 {id} 失败：{error}', saved: '字幕已保存：{path}', submitting: '处理中...'
+        jobStarted: '任务 {id} 已开始。', jobDone: '任务 {id} 已完成。', jobFailed: '任务 {id} 失败：{error}', saved: '字幕已保存：{path}', submitting: '处理中...',
+        promptCopied: '翻译模板和 {count} 条英文字幕已复制。', imported: '目标语言 SRT 已生成：{path}'
       }
     };
     const CODE_COPY = {
@@ -924,6 +1117,54 @@ PAGE_TEMPLATE = """<!doctype html>
       fillFinalOutput();
     }
 
+    async function copyTranslationPrompt() {
+      const form = document.getElementById('translation-form');
+      const source = document.getElementById('source-srt').value;
+      if (!source) { showError(uiText('chooseEnglishFirst')); return; }
+      const data = new URLSearchParams(new FormData(form));
+      try {
+        const response = await fetch('/webchat-prompt', { method: 'POST', headers: { Accept: 'application/json' }, body: data });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok || !payload.prompt) throw new Error(payload.error || 'prompt failed');
+        if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(payload.prompt);
+        else {
+          const textarea = document.createElement('textarea');
+          textarea.value = payload.prompt;
+          textarea.style.position = 'fixed';
+          textarea.style.opacity = '0';
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          textarea.remove();
+        }
+        showNotice(formatText('promptCopied', { count: payload.entries || 0 }), false, true);
+      } catch (error) {
+        showError(String(error));
+      }
+    }
+
+    async function importTranslatedSrt(event) {
+      event.preventDefault();
+      const form = document.getElementById('translation-form');
+      const submit = form.querySelector('button[type="submit"]');
+      submit.disabled = true;
+      try {
+        const response = await fetch('/import-translation', {
+          method: 'POST', headers: { Accept: 'application/json' }, body: new URLSearchParams(new FormData(form))
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok || !payload.output_srt) throw new Error(payload.error || 'translation import failed');
+        document.getElementById('final-subtitle').value = payload.output_srt;
+        fillFinalOutput();
+        showNotice(formatText('imported', { path: payload.output_srt }), false, true);
+        document.getElementById('finalize').scrollIntoView({ behavior: 'smooth' });
+      } catch (error) {
+        showError(String(error));
+      } finally {
+        submit.disabled = false;
+      }
+    }
+
     function fillFinalOutput() {
       const video = document.getElementById('final-video').value;
       const subtitle = document.getElementById('final-subtitle').value;
@@ -1068,7 +1309,8 @@ EDITOR_TEMPLATE = """<!doctype html>
     th { position: sticky; top: 0; z-index: 1; background: var(--surface-soft); color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; letter-spacing: 0; }
     th:nth-child(1) { width: 54px; }
     th:nth-child(2) { width: 230px; }
-    th:nth-child(3), th:nth-child(4) { width: calc((100% - 284px) / 2); }
+    th:nth-child(3), th:nth-child(4) { width: calc((100% - 380px) / 2); }
+    th:nth-child(5) { width: 96px; }
     code { white-space: pre-wrap; word-break: break-word; font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 11px; }
     button, .back-link { display: inline-grid; place-items: center; min-height: 44px; border: 1px solid transparent; border-radius: 6px; padding: 9px 14px; font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; touch-action: manipulation; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, opacity .15s ease; }
     button { background: var(--primary); color: white; }
@@ -1120,9 +1362,10 @@ EDITOR_TEMPLATE = """<!doctype html>
         </label>
       </div>
       <div class="editor-table-wrap"><table>
-        <thead><tr><th>#</th><th data-i18n data-en="Timecode" data-zh="时间码">Timecode</th><th data-i18n data-en="Current text" data-zh="当前文本">当前文本</th><th data-i18n data-en="Edited text" data-zh="编辑后文本">编辑后文本</th></tr></thead>
+        <thead><tr><th>#</th><th data-i18n data-en="Timecode" data-zh="时间码">Timecode</th><th data-i18n data-en="Current text" data-zh="当前文本">当前文本</th><th data-i18n data-en="Edited text" data-zh="编辑后文本">编辑后文本</th><th data-i18n data-en="Action" data-zh="操作">操作</th></tr></thead>
         <tbody>__ROWS__</tbody>
       </table></div>
+      <p id="empty-notice" class="file-path" hidden data-i18n data-en="No subtitle entries remain." data-zh="没有保留的字幕条目。">没有保留的字幕条目。</p>
       <p class="save-row"><button id="save-button" type="submit" data-i18n data-en="Save SRT" data-zh="保存 SRT">Save SRT</button></p>
     </form>
   </main>
@@ -1144,6 +1387,13 @@ EDITOR_TEMPLATE = """<!doctype html>
     }
     function toggleLanguage() {
       applyLanguage(currentLanguage === 'zh' ? 'en' : 'zh');
+    }
+    function removeEntry(button) {
+      const row = button.closest("tr");
+      if (!row) return;
+      row.remove();
+      const notice = document.getElementById("empty-notice");
+      if (notice) notice.hidden = document.querySelectorAll("tbody tr").length !== 0;
     }
     function setSavingState() {
       const button = document.getElementById('save-button');

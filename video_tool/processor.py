@@ -28,7 +28,7 @@ class SubtitleStyle:
 @dataclass(frozen=True)
 class ProcessingRequest:
     video_path: Path
-    subtitle_path: Path
+    subtitle_path: Path | None
     mode: str
     language_code: str
     output_dir: Path | None = None
@@ -47,25 +47,31 @@ class ProcessingResult:
 
 def process_video(request: ProcessingRequest) -> ProcessingResult:
     video_path = _existing_file(request.video_path, "video")
-    subtitle_path = _existing_file(request.subtitle_path, "subtitle")
     mode = request.mode.strip().lower()
     language = find_language(request.language_code)
 
     if video_path.suffix.lower() not in VIDEO_EXTENSIONS:
         raise ProcessingError(f"unsupported video extension: {video_path.suffix}")
-    if subtitle_path.suffix.lower() not in SUBTITLE_EXTENSIONS:
-        raise ProcessingError(f"unsupported subtitle extension: {subtitle_path.suffix}")
 
     requested_root = request.output_dir or (request.output_path.parent if request.output_path else None)
     output_dir = output_directory(video_path, requested_root)
     output_path = output_dir / request.output_path.name if request.output_path else None
+
+    if mode in {"strip", "strip-soft", "remove-soft", "移除软字幕"}:
+        return _strip_soft_subtitles(video_path, language, output_dir, output_path, request.ffmpeg_bin)
+
+    if request.subtitle_path is None:
+        raise ProcessingError("subtitle file is required for burn and external modes")
+    subtitle_path = _existing_file(request.subtitle_path, "subtitle")
+    if subtitle_path.suffix.lower() not in SUBTITLE_EXTENSIONS:
+        raise ProcessingError(f"unsupported subtitle extension: {subtitle_path.suffix}")
 
     if mode in {"external", "sidecar", "外挂字幕"}:
         return _create_external_subtitle(video_path, subtitle_path, language, output_dir, output_path)
     if mode in {"burn", "hard", "hardsub", "烧录"}:
         return _burn_subtitle(video_path, subtitle_path, language, output_dir, output_path, request.ffmpeg_bin, request.style)
 
-    raise ProcessingError("mode must be 'burn' or 'external'")
+    raise ProcessingError("mode must be 'burn', 'external', or 'strip-soft'")
 
 
 def render_subtitle_preview(
@@ -88,10 +94,10 @@ def render_subtitle_preview(
         ffmpeg,
         "-hide_banner",
         "-y",
-        "-ss",
-        f"{max(0.0, timestamp):.3f}",
         "-i",
         str(video),
+        "-ss",
+        f"{max(0.0, timestamp):.3f}",
         "-vframes",
         "1",
         "-vf",
@@ -156,6 +162,37 @@ def _create_external_subtitle(
     if target.resolve() != subtitle_path.resolve():
         shutil.copy2(subtitle_path, target)
     return ProcessingResult(output_path=target, mode="external", command=None, language=language)
+
+
+def _strip_soft_subtitles(
+    video_path: Path,
+    language: SubtitleLanguage,
+    output_dir: Path,
+    output_path: Path | None,
+    ffmpeg_bin: str | None,
+) -> ProcessingResult:
+    ffmpeg = resolve_ffmpeg(ffmpeg_bin)
+    suffix = video_path.suffix.lower() or ".mp4"
+    target = output_path or output_dir / f"{video_path.stem}.no-subs{suffix}"
+    if target.resolve() == video_path.resolve():
+        raise ProcessingError("output path must be different from input video path")
+
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-y",
+        "-i",
+        str(video_path),
+        "-map",
+        "0",
+        "-map",
+        "-0:s?",
+        "-c",
+        "copy",
+        str(target),
+    ]
+    _run(command)
+    return ProcessingResult(output_path=target, mode="strip-soft", command=command, language=language)
 
 
 def _burn_subtitle(

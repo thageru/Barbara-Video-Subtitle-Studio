@@ -18,4 +18,4 @@ macOS 用户双击项目根目录的 `Barbara-Video-Subtitle-Studio.command` 即
 - `ffmpeg`（预览、硬字幕和视频输出）
 - `whisperkit-cli`（生成英文字幕）
 
-翻译 API 仍由用户在页面中配置；也可以使用在线编辑器完成手动翻译，不需要 API。
+翻译页不需要 API 配置。页面会生成“翻译模板 + 完整英文 SRT”，用户把它复制到任意 AI，随后将返回的完整目标语言 SRT 粘贴回来即可。

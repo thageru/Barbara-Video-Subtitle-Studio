@@ -53,11 +53,8 @@ type GenerateForm = {
 type TranslateForm = {
   source_srt: string
   output_srt: string
+  response_text: string
   target_language: string
-  base_url: string
-  api_key: string
-  model: string
-  chunk_size: string
   glossary: string
 }
 
@@ -72,6 +69,12 @@ type FinalizeForm = {
   output_video: string
 }
 
+type SubtitleCue = {
+  start: number
+  end: number
+  text: string
+}
+
 const copy = {
   zh: {
     brand: 'Barbara 视频字幕工作台',
@@ -80,7 +83,7 @@ const copy = {
     shutdown: '关闭服务',
     eyebrow: 'LOCAL SUBTITLE WORKFLOW',
     heroTitle: '从语音识别到最终视频，保持一个清晰流程。',
-    heroBody: '生成英文字幕、翻译简体中文、在线校对并预览输出。视频文件只传递本地路径，不会上传到网页。',
+    heroBody: '生成英文字幕、复制提示词进行人工辅助翻译、在线校对并预览输出。视频文件只传递本地路径，不会上传到外部服务。',
     start: '开始生成',
     openEditor: '打开编辑器',
     pause: '暂停背景视频',
@@ -95,7 +98,7 @@ const copy = {
     },
     descriptions: {
       generate: '先从英文音轨生成时间轴准确的 .en.srt。',
-      translate: '通过 OpenAI-compatible 端点翻译为简体中文。',
+      translate: '复制整理好的字幕提示词，在你选择的 AI 中翻译并导回简体中文 SRT。',
       finalize: '预览字幕位置，然后输出硬字幕视频或外挂字幕。',
       edit: '打开已有 SRT，保留序号和时间轴进行逐条校对。',
       jobs: '查看后台任务的运行、完成和失败状态。',
@@ -111,20 +114,20 @@ const copy = {
     sourceSrt: '英文 SRT',
     outputSrt: '中文输出 SRT',
     targetLanguage: '目标语言',
-    baseUrl: '接口地址 Base URL',
-    apiKey: 'API Key',
-    model: '模型',
-    batchSize: '批次大小',
-    glossary: '术语表 / 翻译说明',
-    translateAction: '开始 AI 翻译',
+    glossary: '术语表 / 翻译风格要求',
+    importTranslation: '生成中文 SRT',
     manualEditor: '手动翻译表格',
+    copyWebPrompt: '生成并复制翻译提示词',
+    pasteResponse: '粘贴翻译后的完整 SRT',
+    webchatHint: '复制内容包含翻译模板和完整英文 SRT。其他 AI 只需返回保持原序号和时间码的目标语言 SRT，粘贴回来即可使用。',
     subtitleFile: '字幕文件',
     outputMode: '输出方式',
     fontSize: '字体大小',
     subtitleY: '距底部百分比',
     previewTime: '预览时间点（秒）',
     outputPath: '输出视频 / 字幕路径',
-    previewAction: '截取预览帧',
+    previewAction: '生成精确预览帧',
+    previewHint: '播放器用于实时检查时间轴和位置；精确预览帧与最终烧录使用同一套 ffmpeg 字幕样式。',
     finalizeAction: '开始输出',
     editAction: '打开在线编辑器',
     noJobs: '暂无任务。',
@@ -143,7 +146,7 @@ const copy = {
     shutdown: 'Close service',
     eyebrow: 'LOCAL SUBTITLE WORKFLOW',
     heroTitle: 'Move from speech recognition to final video in one focused flow.',
-    heroBody: 'Generate English timing, translate to Simplified Chinese, review online, preview styling, and export. Local media paths stay on your machine.',
+    heroBody: 'Generate English timing, copy a translation prompt to the AI you choose, review the result, preview styling, and export. Local media stays on your machine.',
     start: 'Start generating',
     openEditor: 'Open editor',
     pause: 'Pause background video',
@@ -158,7 +161,7 @@ const copy = {
     },
     descriptions: {
       generate: 'Create a timing-accurate English .en.srt from the source audio.',
-      translate: 'Translate through an OpenAI-compatible endpoint into Simplified Chinese.',
+      translate: 'Copy a prepared prompt, translate in the AI you choose, and merge the result back into the English timing.',
       finalize: 'Preview subtitle placement, then export hard-burned video or a sidecar file.',
       edit: 'Review an existing SRT line by line without changing indexes or timing.',
       jobs: 'Track queued, running, completed, and failed background jobs.',
@@ -174,20 +177,20 @@ const copy = {
     sourceSrt: 'English SRT',
     outputSrt: 'Translated output SRT',
     targetLanguage: 'Target language',
-    baseUrl: 'Base URL',
-    apiKey: 'API Key',
-    model: 'Model',
-    batchSize: 'Batch size',
-    glossary: 'Glossary / translation notes',
-    translateAction: 'Start AI translation',
+    glossary: 'Glossary / translation style',
+    importTranslation: 'Create translated SRT',
     manualEditor: 'Manual translation table',
+    copyWebPrompt: 'Create and copy translation prompt',
+    pasteResponse: 'Paste the complete translated SRT',
+    webchatHint: 'The copied content contains the translation template and complete English SRT. The other AI should return a target-language SRT with unchanged indexes and timecodes.',
     subtitleFile: 'Subtitle file',
     outputMode: 'Output mode',
     fontSize: 'Font size',
     subtitleY: 'Bottom margin percent',
     previewTime: 'Preview timestamp (seconds)',
     outputPath: 'Output video / subtitle path',
-    previewAction: 'Capture preview frame',
+    previewAction: 'Render exact preview frame',
+    previewHint: 'The player checks timing and placement live. The exact frame uses the same ffmpeg subtitle style as the final burn.',
     finalizeAction: 'Start export',
     editAction: 'Open online editor',
     noJobs: 'No jobs yet.',
@@ -216,7 +219,14 @@ function splitPath(path: string) {
   const file = slash >= 0 ? normalized.slice(slash + 1) : normalized
   const dot = file.lastIndexOf('.')
   const stem = dot > 0 ? file.slice(0, dot) : file
-  return { dir, file, stem }
+  const extension = dot > 0 ? file.slice(dot) : ''
+  return { dir, file, stem, extension }
+}
+
+function translatedSrtPath(path: string) {
+  if (path.endsWith('.en.srt')) return `${path.slice(0, -7)}.zh-Hans.srt`
+  if (path.endsWith('.srt')) return `${path.slice(0, -4)}.zh-Hans.srt`
+  return `${path}.zh-Hans.srt`
 }
 
 function Field({ label, required, children }: { label: string; required?: boolean; children: ReactNode }) {
@@ -299,18 +309,20 @@ export default function App() {
   const [busyKey, setBusyKey] = useState('')
   const [jobs, setJobs] = useState<Job[]>([])
   const [previewUrl, setPreviewUrl] = useState('')
+  const [previewCues, setPreviewCues] = useState<SubtitleCue[]>([])
+  const [activeSubtitle, setActiveSubtitle] = useState('')
+  const [previewDuration, setPreviewDuration] = useState(0)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const previewVideoRef = useRef<HTMLVideoElement>(null)
   const knownStatuses = useRef(new Map<number, Job['status']>())
+  const watchedJobIds = useRef(new Set<number>())
 
   const [generateForm, setGenerateForm] = useState<GenerateForm>({ video_path: '', subtitle_dir: '', subtitle_name: '', model: 'small' })
   const [translateForm, setTranslateForm] = useState<TranslateForm>({
     source_srt: '',
     output_srt: '',
+    response_text: '',
     target_language: 'zh-Hans',
-    base_url: '',
-    api_key: '',
-    model: 'gpt-4.1-mini',
-    chunk_size: '20',
     glossary: '',
   })
   const [finalizeForm, setFinalizeForm] = useState<FinalizeForm>({
@@ -328,6 +340,10 @@ export default function App() {
   const text = copy[language]
   const activeMeta = useMemo(() => viewMeta.find((item) => item.id === activeView) ?? viewMeta[0], [activeView])
   const ActiveIcon = activeMeta.icon
+  const previewMediaUrl = useMemo(
+    () => (finalizeForm.video_path ? `/media?path=${encodeURIComponent(finalizeForm.video_path)}` : ''),
+    [finalizeForm.video_path],
+  )
 
   useEffect(() => {
     localStorage.setItem('barbara-ui-language', language)
@@ -347,7 +363,7 @@ export default function App() {
   }, [videoPaused, videoFailed])
 
   useEffect(() => {
-    if (!notice) return
+    if (!notice || notice.kind !== 'info') return
     const timeout = window.setTimeout(() => setNotice(null), 4800)
     return () => window.clearTimeout(timeout)
   }, [notice])
@@ -359,11 +375,18 @@ export default function App() {
       const nextJobs = (await response.json()) as Job[]
       nextJobs.forEach((job) => {
         const previous = knownStatuses.current.get(job.id)
-        if (previous && previous !== job.status && job.status === 'done') {
+        const watched = watchedJobIds.current.has(job.id)
+        if ((watched || (previous && previous !== job.status)) && job.status === 'done') {
           setNotice({ kind: 'success', message: copy[language].jobDone(job.id) })
+          watchedJobIds.current.delete(job.id)
+          if (job.action === 'generate-english' && job.output_path) {
+            const target = translatedSrtPath(job.output_path)
+            setTranslateForm((current) => ({ ...current, source_srt: job.output_path, output_srt: target }))
+          }
         }
-        if (previous && previous !== job.status && job.status === 'failed') {
+        if ((watched || (previous && previous !== job.status)) && job.status === 'failed') {
           setNotice({ kind: 'error', message: copy[language].jobFailed(job.id, job.error || '') })
+          watchedJobIds.current.delete(job.id)
         }
         knownStatuses.current.set(job.id, job.status)
       })
@@ -378,6 +401,30 @@ export default function App() {
     const timer = window.setInterval(() => void loadJobs(), 3000)
     return () => window.clearInterval(timer)
   }, [loadJobs])
+
+  useEffect(() => {
+    setActiveSubtitle('')
+    if (!finalizeForm.subtitle_path || finalizeForm.mode === 'strip-soft') {
+      setPreviewCues([])
+      return
+    }
+    const controller = new AbortController()
+    void fetch(`/subtitle-cues?path=${encodeURIComponent(finalizeForm.subtitle_path)}`, {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = (await response.json()) as { ok?: boolean; cues?: SubtitleCue[] }
+        if (response.ok && payload.ok && payload.cues) setPreviewCues(payload.cues)
+        else setPreviewCues([])
+      })
+      .catch(() => setPreviewCues([]))
+    return () => controller.abort()
+  }, [finalizeForm.mode, finalizeForm.subtitle_path])
+
+  useEffect(() => {
+    setPreviewUrl('')
+  }, [finalizeForm.mode, finalizeForm.subtitle_path, finalizeForm.video_path])
 
   const choosePath = async (endpoint: string, key: string, onSelected: (path: string) => void) => {
     setBusyKey(key)
@@ -398,20 +445,94 @@ export default function App() {
     setGenerateForm((current) => ({
       ...current,
       video_path: path,
-      subtitle_dir: current.subtitle_dir || (parts.dir ? `${parts.dir}/${parts.stem}` : parts.stem),
-      subtitle_name: current.subtitle_name || parts.stem,
+      subtitle_dir: parts.dir ? `${parts.dir}/${parts.stem}` : parts.stem,
+      subtitle_name: parts.stem,
     }))
-    setFinalizeForm((current) => ({ ...current, video_path: current.video_path || path }))
+    updateFinalOutput({ video_path: path })
   }
 
   const setSrtDefaults = (path: string) => {
-    const target = path.endsWith('.en.srt')
-      ? `${path.slice(0, -7)}.zh-Hans.srt`
-      : path.endsWith('.srt')
-        ? `${path.slice(0, -4)}.zh-Hans.srt`
-        : `${path}.zh-Hans.srt`
-    setTranslateForm((current) => ({ ...current, source_srt: path, output_srt: current.output_srt || target }))
-    setFinalizeForm((current) => ({ ...current, subtitle_path: current.subtitle_path || target }))
+    const target = translatedSrtPath(path)
+    setTranslateForm((current) => ({ ...current, source_srt: path, output_srt: target }))
+    setFinalizeForm((current) => ({ ...current, subtitle_path: target }))
+  }
+
+  const copyWebChatPrompt = async () => {
+    if (!translateForm.source_srt) {
+      setNotice({ kind: "error", message: text.requiredPath })
+      return
+    }
+    setBusyKey("prompt")
+    try {
+      const response = await fetch("/webchat-prompt", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+        body: new URLSearchParams({
+          source_srt: translateForm.source_srt,
+          target_language: translateForm.target_language,
+          glossary: translateForm.glossary,
+        }),
+      })
+      const result = (await response.json()) as { ok?: boolean; prompt?: string; error?: string; entries?: number; batches?: number }
+      if (!response.ok || !result.ok || !result.prompt) throw new Error(result.error || text.requiredPath)
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(result.prompt)
+      } else {
+        const textarea = document.createElement("textarea")
+        textarea.value = result.prompt
+        textarea.style.position = "fixed"
+        textarea.style.opacity = "0"
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand("copy")
+        textarea.remove()
+      }
+      setNotice({
+        kind: 'success',
+        message:
+          language === 'zh'
+            ? `翻译模板和 ${result.entries ?? 0} 条英文字幕已复制。`
+            : `Translation template and ${result.entries ?? 0} English subtitles copied.`,
+      })
+    } catch (error) {
+      setNotice({ kind: "error", message: String(error) })
+    } finally {
+      setBusyKey("")
+    }
+  }
+
+  const importTranslation = async () => {
+    if (!translateForm.source_srt || !translateForm.output_srt || !translateForm.response_text.trim()) {
+      setNotice({
+        kind: 'error',
+        message: language === 'zh' ? '请选择英文 SRT、确认输出路径并粘贴翻译结果。' : 'Choose the English SRT, confirm the output path, and paste the translation response.',
+      })
+      return
+    }
+    setBusyKey('import-translation')
+    try {
+      const response = await fetch('/import-translation', {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: new URLSearchParams(translateForm),
+      })
+      const result = (await response.json()) as { ok?: boolean; output_srt?: string; entries?: number; error?: string }
+      if (!response.ok || !result.ok || !result.output_srt) throw new Error(result.error || `HTTP ${response.status}`)
+      setFinalizeForm((current) => ({ ...current, subtitle_path: result.output_srt ?? current.subtitle_path }))
+      setEditSubtitle(result.output_srt)
+      setNotice({
+        kind: 'success',
+        message:
+          language === 'zh'
+            ? `已生成 ${result.entries ?? 0} 条中文字幕，正在进入预览。`
+            : `Created ${result.entries ?? 0} translated subtitles. Opening preview.`,
+      })
+      setActiveView('finalize')
+    } catch (error) {
+      setNotice({ kind: 'error', message: String(error) })
+    } finally {
+      setBusyKey('')
+    }
   }
 
   const updateFinalOutput = (updates: Partial<FinalizeForm>) => {
@@ -419,7 +540,13 @@ export default function App() {
       const next = { ...current, ...updates }
       if (!next.video_path) return next
       const video = splitPath(next.video_path)
-      const suffix = next.mode === 'burn' ? '.zh-Hans.hardsub.mp4' : '.zh-Hans.srt'
+      const languageSuffix = next.target_language || 'zh-Hans'
+      const suffix =
+        next.mode === 'burn'
+          ? `.${languageSuffix}.hardsub.mp4`
+          : next.mode === 'external'
+            ? `.${languageSuffix}.srt`
+            : `.no-subs${video.extension || '.mp4'}`
       return { ...next, output_video: `${video.dir ? `${video.dir}/` : ''}${video.stem}/${video.stem}${suffix}` }
     })
   }
@@ -435,6 +562,7 @@ export default function App() {
       const result = (await response.json()) as { ok?: boolean; job_id?: number; error?: string }
       if (!response.ok || !result.ok || !result.job_id) throw new Error(result.error || `HTTP ${response.status}`)
       knownStatuses.current.set(result.job_id, 'queued')
+      watchedJobIds.current.add(result.job_id)
       setNotice({ kind: 'info', message: text.jobStarted(result.job_id) })
       await loadJobs()
     } catch (error) {
@@ -464,6 +592,28 @@ export default function App() {
       setNotice({ kind: 'error', message: String(error) })
     } finally {
       setBusyKey('')
+    }
+  }
+
+  const syncLiveSubtitle = () => {
+    const video = previewVideoRef.current
+    if (!video) return
+    const time = video.currentTime
+    const visible = previewCues
+      .filter((cue) => time >= cue.start && time < cue.end)
+      .map((cue) => cue.text)
+      .join('\n')
+    setActiveSubtitle(visible)
+    setFinalizeForm((current) => ({ ...current, preview_time: time.toFixed(1) }))
+  }
+
+  const seekPreview = (value: string) => {
+    setFinalizeForm((current) => ({ ...current, preview_time: value }))
+    const video = previewVideoRef.current
+    const nextTime = Number(value)
+    if (video && Number.isFinite(nextTime)) {
+      video.currentTime = Math.max(0, Math.min(video.duration || nextTime, nextTime))
+      syncLiveSubtitle()
     }
   }
 
@@ -554,7 +704,7 @@ export default function App() {
           className="grid gap-4"
           onSubmit={(event) => {
             event.preventDefault()
-            void submitJob('/translate-ai', translateForm, 'translate')
+            void importTranslation()
           }}
         >
           <PathField
@@ -588,46 +738,6 @@ export default function App() {
               </select>
             </Field>
           </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label={text.baseUrl}>
-              <input
-                className="field-control"
-                type="url"
-                inputMode="url"
-                value={translateForm.base_url}
-                onChange={(event) => setTranslateForm((current) => ({ ...current, base_url: event.target.value }))}
-                placeholder="https://api.openai.com/v1"
-              />
-            </Field>
-            <Field label={text.apiKey}>
-              <input
-                className="field-control"
-                type="password"
-                autoComplete="off"
-                value={translateForm.api_key}
-                onChange={(event) => setTranslateForm((current) => ({ ...current, api_key: event.target.value }))}
-                placeholder={language === 'zh' ? '本地端点可留空' : 'Optional for local endpoints'}
-              />
-            </Field>
-            <Field label={text.model}>
-              <input
-                className="field-control"
-                value={translateForm.model}
-                onChange={(event) => setTranslateForm((current) => ({ ...current, model: event.target.value }))}
-              />
-            </Field>
-            <Field label={text.batchSize}>
-              <input
-                className="field-control"
-                type="number"
-                min="5"
-                max="50"
-                inputMode="numeric"
-                value={translateForm.chunk_size}
-                onChange={(event) => setTranslateForm((current) => ({ ...current, chunk_size: event.target.value }))}
-              />
-            </Field>
-          </div>
           <Field label={text.glossary}>
             <textarea
               className="field-control min-h-24 resize-y"
@@ -636,8 +746,33 @@ export default function App() {
               placeholder={language === 'zh' ? '例如：PYP=小学项目，transdisciplinary=超学科' : 'Example: PYP=Primary Years Programme'}
             />
           </Field>
+          <div className="rounded-2xl border border-white/10 bg-black/15 p-4 text-sm leading-6 text-white/62">{text.webchatHint}</div>
+          <button
+            type="button"
+            onClick={() => void copyWebChatPrompt()}
+            disabled={busyKey === 'prompt'}
+            className="liquid-glass inline-flex min-h-11 w-fit items-center gap-2 rounded-full px-6 text-sm font-medium text-white transition-colors hover:bg-white/10 disabled:opacity-50"
+          >
+            {busyKey === 'prompt' ? <LoaderCircle size={17} className="animate-spin" /> : <Languages size={17} />}
+            {busyKey === 'prompt' ? text.working : text.copyWebPrompt}
+          </button>
+          <Field label={text.pasteResponse}>
+            <textarea
+              className="field-control min-h-48 resize-y font-mono text-xs"
+              value={translateForm.response_text}
+              onChange={(event) => setTranslateForm((current) => ({ ...current, response_text: event.target.value }))}
+              placeholder={
+                language === 'zh'
+                  ? '粘贴其他 AI 返回的完整 SRT；可以包含 ```srt 代码块，系统会自动提取。'
+                  : 'Paste the complete SRT returned by the other AI. An optional ```srt code fence is accepted.'
+              }
+              required
+            />
+          </Field>
           <div className="flex flex-wrap gap-3 pt-2">
-            <PrimaryButton busy={busyKey === 'translate'}>{busyKey === 'translate' ? text.working : text.translateAction}</PrimaryButton>
+            <PrimaryButton busy={busyKey === 'import-translation'}>
+              {busyKey === 'import-translation' ? text.working : text.importTranslation}
+            </PrimaryButton>
             <button
               type="button"
               onClick={() => openEditor(translateForm.source_srt, translateForm.output_srt)}
@@ -671,66 +806,80 @@ export default function App() {
               onChange={(value) => updateFinalOutput({ video_path: value })}
               onChoose={() => void choosePath('/choose-file?purpose=video', 'final-video', (path) => updateFinalOutput({ video_path: path }))}
             />
-            <PathField
-              label={text.subtitleFile}
-              value={finalizeForm.subtitle_path}
-              placeholder={language === 'zh' ? '选择翻译后的 .srt' : 'Choose translated .srt'}
-              buttonLabel={text.chooseSubtitle}
-              icon={FileText}
-              required
-              busy={busyKey === 'final-subtitle'}
-              onChange={(value) => updateFinalOutput({ subtitle_path: value })}
-              onChoose={() =>
-                void choosePath('/choose-file?purpose=subtitle', 'final-subtitle', (path) => updateFinalOutput({ subtitle_path: path }))
-              }
-            />
+            {finalizeForm.mode !== 'strip-soft' ? (
+              <PathField
+                label={text.subtitleFile}
+                value={finalizeForm.subtitle_path}
+                placeholder={language === 'zh' ? '选择翻译后的 .srt' : 'Choose translated .srt'}
+                buttonLabel={text.chooseSubtitle}
+                icon={FileText}
+                required
+                busy={busyKey === 'final-subtitle'}
+                onChange={(value) => updateFinalOutput({ subtitle_path: value })}
+                onChoose={() =>
+                  void choosePath('/choose-file?purpose=subtitle', 'final-subtitle', (path) => updateFinalOutput({ subtitle_path: path }))
+                }
+              />
+            ) : (
+              <div className="rounded-2xl border border-amber-200/20 bg-amber-100/10 p-4 text-sm leading-6 text-amber-50/78">
+                {language === 'zh'
+                  ? '该模式会无损移除视频中的内嵌软字幕轨道。已经烧进画面的硬字幕属于图像像素，无法无损删除。'
+                  : 'This mode removes embedded soft-subtitle tracks without re-encoding. Hard subtitles already burned into pixels cannot be removed losslessly.'}
+              </div>
+            )}
             <div className="grid gap-4 md:grid-cols-2">
               <Field label={text.outputMode}>
                 <select className="field-control" value={finalizeForm.mode} onChange={(event) => updateFinalOutput({ mode: event.target.value })}>
                   <option value="burn">{language === 'zh' ? '硬字幕烧录进视频' : 'Hard burn into video'}</option>
                   <option value="external">{language === 'zh' ? '外挂字幕文件' : 'External sidecar subtitle'}</option>
+                  <option value="strip-soft">{language === 'zh' ? '移除内嵌软字幕' : 'Remove embedded soft subtitles'}</option>
                 </select>
               </Field>
-              <Field label={text.targetLanguage}>
-                <select
-                  className="field-control"
-                  value={finalizeForm.target_language}
-                  onChange={(event) => updateFinalOutput({ target_language: event.target.value })}
-                >
-                  <option value="zh-Hans">zh-Hans - {language === 'zh' ? '简体中文' : 'Simplified Chinese'}</option>
-                  <option value="en">en - English</option>
-                </select>
-              </Field>
-              <Field label={text.fontSize}>
-                <input
-                  className="field-control"
-                  type="number"
-                  min="8"
-                  max="128"
-                  inputMode="numeric"
-                  value={finalizeForm.font_size}
-                  onChange={(event) => updateFinalOutput({ font_size: event.target.value })}
-                />
-              </Field>
-              <Field label={`${text.subtitleY}: ${finalizeForm.subtitle_y}%`}>
-                <input
-                  className="h-11 w-full accent-emerald-200"
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={finalizeForm.subtitle_y}
-                  onChange={(event) => updateFinalOutput({ subtitle_y: event.target.value })}
-                />
-              </Field>
+              {finalizeForm.mode !== 'strip-soft' ? (
+                <>
+                  <Field label={text.targetLanguage}>
+                    <select
+                      className="field-control"
+                      value={finalizeForm.target_language}
+                      onChange={(event) => updateFinalOutput({ target_language: event.target.value })}
+                    >
+                      <option value="zh-Hans">zh-Hans - {language === 'zh' ? '简体中文' : 'Simplified Chinese'}</option>
+                      <option value="en">en - English</option>
+                    </select>
+                  </Field>
+                  <Field label={text.fontSize}>
+                    <input
+                      className="field-control"
+                      type="number"
+                      min="8"
+                      max="128"
+                      inputMode="numeric"
+                      value={finalizeForm.font_size}
+                      onChange={(event) => updateFinalOutput({ font_size: event.target.value })}
+                    />
+                  </Field>
+                  <Field label={`${text.subtitleY}: ${finalizeForm.subtitle_y}%`}>
+                    <input
+                      className="h-11 w-full accent-emerald-200"
+                      type="range"
+                      min="0"
+                      max="50"
+                      value={finalizeForm.subtitle_y}
+                      onChange={(event) => updateFinalOutput({ subtitle_y: event.target.value })}
+                    />
+                  </Field>
+                </>
+              ) : null}
               <Field label={text.previewTime}>
                 <input
                   className="field-control"
                   type="number"
                   min="0"
+                  max={previewDuration || undefined}
                   step="0.1"
                   inputMode="decimal"
                   value={finalizeForm.preview_time}
-                  onChange={(event) => updateFinalOutput({ preview_time: event.target.value })}
+                  onChange={(event) => seekPreview(event.target.value)}
                 />
               </Field>
               <Field label={text.outputPath}>
@@ -742,18 +891,63 @@ export default function App() {
               </Field>
             </div>
             <div className="flex flex-wrap gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => void previewFrame()}
-                disabled={busyKey === 'preview'}
-                className="liquid-glass inline-flex min-h-11 items-center gap-2 rounded-full px-6 text-sm font-medium text-white transition-colors hover:bg-white/10 disabled:opacity-50"
-              >
-                {busyKey === 'preview' ? <LoaderCircle size={17} className="animate-spin" /> : <Eye size={17} />}
-                {text.previewAction}
-              </button>
+              {finalizeForm.mode !== 'strip-soft' ? (
+                <button
+                  type="button"
+                  onClick={() => void previewFrame()}
+                  disabled={busyKey === 'preview'}
+                  className="liquid-glass inline-flex min-h-11 items-center gap-2 rounded-full px-6 text-sm font-medium text-white transition-colors hover:bg-white/10 disabled:opacity-50"
+                >
+                  {busyKey === 'preview' ? <LoaderCircle size={17} className="animate-spin" /> : <Eye size={17} />}
+                  {text.previewAction}
+                </button>
+              ) : null}
               <PrimaryButton busy={busyKey === 'finalize'}>{busyKey === 'finalize' ? text.working : text.finalizeAction}</PrimaryButton>
             </div>
+            {finalizeForm.mode !== 'strip-soft' ? <p className="text-xs leading-5 text-white/52">{text.previewHint}</p> : null}
           </form>
+          {previewMediaUrl ? (
+            <figure className="overflow-hidden rounded-2xl border border-white/15 bg-black/35">
+              <div className="relative aspect-video bg-black">
+                <video
+                  ref={previewVideoRef}
+                  key={previewMediaUrl}
+                  className="h-full w-full object-contain"
+                  src={previewMediaUrl}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  onLoadedMetadata={(event) => {
+                    const duration = Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0
+                    setPreviewDuration(duration)
+                    const requested = Number(finalizeForm.preview_time)
+                    if (Number.isFinite(requested) && requested > 0 && requested < duration) event.currentTarget.currentTime = requested
+                  }}
+                  onTimeUpdate={syncLiveSubtitle}
+                  onSeeked={syncLiveSubtitle}
+                >
+                  {language === 'zh' ? '当前浏览器无法播放此视频格式。' : 'This browser cannot play the selected video format.'}
+                </video>
+                {finalizeForm.mode !== 'strip-soft' && activeSubtitle ? (
+                  <div
+                    className="pointer-events-none absolute left-[6%] right-[6%] text-center font-semibold leading-snug text-white"
+                    style={{
+                      bottom: `${Math.max(2, Math.min(50, Number(finalizeForm.subtitle_y) || 2))}%`,
+                      fontSize: `${Math.max(14, Math.min(56, Number(finalizeForm.font_size) || 22))}px`,
+                      whiteSpace: 'pre-line',
+                      textShadow: '0 2px 4px #000, 0 0 8px #000, 1px 1px 1px #000',
+                    }}
+                  >
+                    {activeSubtitle}
+                  </div>
+                ) : null}
+              </div>
+              <figcaption className="flex items-center justify-between gap-3 border-t border-white/10 px-4 py-3 text-xs text-white/55">
+                <span>{language === 'zh' ? '本地实时预览' : 'Local live preview'}</span>
+                <span>{finalizeForm.preview_time}s</span>
+              </figcaption>
+            </figure>
+          ) : null}
           {previewUrl ? (
             <figure className="overflow-hidden rounded-2xl border border-white/15 bg-black/25">
               <img src={previewUrl} alt={language === 'zh' ? '字幕预览帧' : 'Subtitle preview frame'} className="block w-full" />
