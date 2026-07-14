@@ -29,3 +29,7 @@ videoprocess-preview-*.png
 *.mkv
 *.webm
 *.avi
+
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo

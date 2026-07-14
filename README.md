@@ -39,14 +39,36 @@ export FFMPEG_BIN=/path/to/ffmpeg
 
 API 翻译不是离线能力。页面保留 `base_url`、`api_key`、`model` 输入，可指向 OpenAI 或本地 OpenAI-compatible 服务；手动编辑路径不调用任何 API。
 
-## Web UI
+## Web UI（一键启动）
+
+### 普通用户：双击启动
+
+在 macOS Finder 中双击项目根目录里的 `Barbara-Video-Subtitle-Studio.command`。启动器会自动选择项目自带的 Python 虚拟环境（如果存在），否则使用系统 Python，并打开本地工作台。
+
+本分支已经附带编译好的 React 前端，因此普通用户不需要安装 Node.js 或 npm。启动器会在缺少 `ffmpeg` 或 `whisperkit-cli` 时给出清晰提示；字幕生成、预览和视频导出分别需要这些工具。
+
+如果 macOS 第一次阻止打开，请右键该文件并选择“打开”。终端窗口请保持打开，关闭服务时可以点击页面右上角的 `Close Service`。
+
+### 开发者：重新构建前端
+
+只有需要修改 React 界面时才需要 Node.js：
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+构建结果会写入 `video_tool/static/`，Python 服务会自动托管该目录。
 
 启动：
 
 ```bash
 cd Barbara-Video-Subtitle-Studio
-python3 run_web.py --open
+python3 run_web.py --port 8876 --open
 ```
+
+默认地址是 `http://127.0.0.1:8876/`。应用完全在本机运行；背景视频是远程视觉资源，网络不可用时会自动降级为静态深色背景。
 
 页面右上角提供中英文切换按钮，选择会保存在浏览器本地，下次打开继续使用上次语言。
 

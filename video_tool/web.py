@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import mimetypes
 import subprocess
 import threading
 import traceback
@@ -45,6 +46,7 @@ class AppState:
 
 
 STATE = AppState()
+STATIC_DIR = Path(__file__).with_name("static")
 
 
 class VideoToolHandler(BaseHTTPRequestHandler):
@@ -53,8 +55,21 @@ class VideoToolHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/":
+            index_path = STATIC_DIR / "index.html"
+            if index_path.is_file():
+                self._send_file(index_path, "text/html; charset=utf-8")
+                return
             query = parse_qs(parsed.query)
             self._send_html(render_page(message=query.get("message", [""])[0]))
+            return
+        if parsed.path.startswith("/assets/"):
+            asset_path = (STATIC_DIR / parsed.path.lstrip("/")).resolve()
+            assets_root = (STATIC_DIR / "assets").resolve()
+            if assets_root not in asset_path.parents or not asset_path.is_file():
+                self.send_error(404)
+                return
+            content_type = mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream"
+            self._send_file(asset_path, content_type)
             return
         if parsed.path == "/jobs.json":
             with STATE.lock:
@@ -90,7 +105,10 @@ class VideoToolHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/shutdown":
-            self._send_html(render_shutdown_page())
+            if self._wants_json():
+                self._send_json({"ok": True, "status": "shutting-down"})
+            else:
+                self._send_html(render_shutdown_page())
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
 
@@ -106,9 +124,12 @@ class VideoToolHandler(BaseHTTPRequestHandler):
             with STATE.lock:
                 STATE.jobs.insert(0, job)
             threading.Thread(target=_run_job, args=(job.id, data), daemon=True).start()
-            self.send_response(303)
-            self.send_header("Location", "/?" + urlencode({"job_id": job.id}))
-            self.end_headers()
+            if self._wants_json():
+                self._send_json({"ok": True, "job_id": job.id, "status": job.status}, status=202)
+            else:
+                self.send_response(303)
+                self.send_header("Location", "/?" + urlencode({"job_id": job.id}))
+                self.end_headers()
             return
         self.send_error(404)
 
@@ -118,6 +139,9 @@ class VideoToolHandler(BaseHTTPRequestHandler):
     def _read_form(self) -> dict[str, list[str]]:
         length = int(self.headers.get("Content-Length", "0"))
         return parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
+
+    def _wants_json(self) -> bool:
+        return "application/json" in self.headers.get("Accept", "")
 
     def _create_job(self, path: str, data: dict[str, list[str]]) -> JobRecord:
         action = {
@@ -184,9 +208,9 @@ class VideoToolHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def _send_json(self, payload: object) -> None:
+    def _send_json(self, payload: object, status: int = 200) -> None:
         encoded = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
