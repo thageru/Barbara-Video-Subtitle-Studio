@@ -17,7 +17,7 @@ def output_directory(source: Path, root: Path | None = None) -> Path:
     source = Path(source).expanduser().resolve()
     media_name = media_stem(source)
     base = Path(root).expanduser().resolve() if root else source.parent
-    directory = base if base.name == media_name else base / media_name
+    directory = base if base.name.strip() == media_name.strip() else base / media_name
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 

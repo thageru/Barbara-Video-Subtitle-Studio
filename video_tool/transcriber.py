@@ -10,6 +10,7 @@ from .languages import SubtitleLanguage, find_language
 from .chinese import to_simplified_chinese
 from .processor import ProcessingError, ProcessingRequest, SubtitleStyle, VIDEO_EXTENSIONS, process_video
 from .paths import output_directory
+from .srt import is_non_speech_text
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,8 @@ def normalize_srt(source: Path, destination: Path, simplify: bool = False) -> in
         text_lines = [line.strip() for line in lines[2:] if line.strip()]
         if not text_lines:
             continue
+        if _is_non_speech_cue(text_lines):
+            continue
         if simplify:
             text_lines = [to_simplified_chinese(line) for line in text_lines]
         cleaned_blocks.append("\n".join([str(len(cleaned_blocks) + 1), timecode, *text_lines]))
@@ -131,6 +134,10 @@ def normalize_srt(source: Path, destination: Path, simplify: bool = False) -> in
     destination.write_text("\n\n".join(cleaned_blocks) + "\n", encoding="utf-8")
     return len(cleaned_blocks)
 
+
+def _is_non_speech_cue(lines: list[str]) -> bool:
+    """Drop music and sound-effect labels, but keep spoken text containing them."""
+    return is_non_speech_text(" ".join(lines))
 
 def _transcribe_with_whisperkit(
     whisperkit: str,

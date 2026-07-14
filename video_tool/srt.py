@@ -5,6 +5,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SRT_TIME = re.compile(r"\d\d:\d\d:\d\d,\d\d\d\s+-->\s+\d\d:\d\d:\d\d,\d\d\d(?:\s+.*)?")
+NON_SPEECH_LABELS = {
+    "music",
+    "music playing",
+    "background music",
+    "upbeat music",
+    "gentle music",
+    "instrumental music",
+    "sound effect",
+    "sound effects",
+    "sfx",
+    "blank audio",
+    "blank_audio",
+    "silence",
+    "applause",
+    "laughter",
+}
 
 
 @dataclass(frozen=True)
@@ -16,6 +32,11 @@ class SrtEntry:
 
 def parse_srt(path: Path) -> list[SrtEntry]:
     content = Path(path).expanduser().read_text(encoding="utf-8-sig").replace("\r", "")
+    return parse_srt_text(content)
+
+
+def parse_srt_text(content: str) -> list[SrtEntry]:
+    content = str(content or "").lstrip("\ufeff").replace("\r", "")
     blocks = [block for block in content.split("\n\n") if block.strip()]
     entries: list[SrtEntry] = []
     for block in blocks:
@@ -75,6 +96,12 @@ def default_translated_path(source: Path, target_language: str = "zh-Hans") -> P
     if stem.endswith(".en"):
         stem = stem[:-3]
     return source.with_name(f"{stem}.{target_language}.srt")
+
+
+def is_non_speech_text(text: str) -> bool:
+    normalized = str(text or "").casefold().replace("♪", "").replace("♫", "").strip()
+    normalized = normalized.strip("[](){}<> ")
+    return not normalized or normalized in NON_SPEECH_LABELS
 
 
 def _clean_text(value: str) -> str:

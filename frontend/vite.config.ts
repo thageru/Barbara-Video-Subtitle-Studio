@@ -1,0 +1,38 @@
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+const apiRoutes = [
+  '/jobs.json',
+  '/service-client',
+  '/service-events',
+  '/choose-file',
+  '/choose-directory',
+  '/media',
+  '/subtitle-cues',
+  '/generate-english',
+  '/translate-ai',
+  '/webchat-prompt',
+  '/import-translation',
+  '/preview-frame',
+  '/preview',
+  '/finalize',
+  '/process',
+  '/edit',
+  '/save-manual',
+  '/shutdown',
+]
+
+export default defineConfig({
+  plugins: [react()],
+  build: {
+    outDir: '../video_tool/static',
+    emptyOutDir: true,
+  },
+  server: {
+    host: '127.0.0.1',
+    port: 5173,
+    proxy: Object.fromEntries(
+      apiRoutes.map((route) => [route, { target: 'http://127.0.0.1:8876', changeOrigin: false }]),
+    ),
+  },
+})

@@ -18,12 +18,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     process_parser = subparsers.add_parser("process", help="add subtitles to a local video")
     process_parser.add_argument("--video", required=True, type=Path, help="input video path")
-    process_parser.add_argument("--subtitle", required=True, type=Path, help="input subtitle path (.srt/.ass/.ssa/.vtt)")
+    process_parser.add_argument("--subtitle", type=Path, help="input subtitle path (.srt/.ass/.ssa/.vtt); not used by strip-soft")
     process_parser.add_argument(
         "--mode",
         required=True,
-        choices=["burn", "external"],
-        help="burn: hard-code subtitles into mp4; external: copy subtitle as sidecar file",
+        choices=["burn", "external", "strip-soft"],
+        help="burn: hard-code subtitles; external: copy a sidecar SRT; strip-soft: remove embedded subtitle streams",
     )
     process_parser.add_argument(
         "--language",
@@ -97,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "process":
+            if args.mode != "strip-soft" and args.subtitle is None:
+                raise ProcessingError("--subtitle is required for burn and external modes")
             result = process_video(
                 ProcessingRequest(
                     video_path=args.video,
