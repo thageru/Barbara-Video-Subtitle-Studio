@@ -6,6 +6,7 @@ import mimetypes
 import re
 import subprocess
 import threading
+import time
 import traceback
 import webbrowser
 from dataclasses import asdict, dataclass, field
@@ -53,6 +54,70 @@ class AppState:
 
 STATE = AppState()
 STATIC_DIR = Path(__file__).with_name("static")
+SERVICE_CLIENT_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+
+
+@dataclass
+class ServiceLifecycle:
+    client_timeout: float = 90.0
+    empty_grace: float = 3.0
+    clients: dict[str, float] = field(default_factory=dict)
+    had_client: bool = False
+    empty_since: float | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def heartbeat(self, client_id: str, now: float | None = None) -> None:
+        current = time.monotonic() if now is None else now
+        with self.lock:
+            self.clients[client_id] = current
+            self.had_client = True
+            self.empty_since = None
+
+    def disconnect(self, client_id: str, now: float | None = None) -> None:
+        current = time.monotonic() if now is None else now
+        with self.lock:
+            self.clients.pop(client_id, None)
+            if self.had_client and not self.clients and self.empty_since is None:
+                self.empty_since = current
+
+    def should_shutdown(self, now: float | None = None) -> bool:
+        current = time.monotonic() if now is None else now
+        with self.lock:
+            expired = [client_id for client_id, seen_at in self.clients.items() if current - seen_at >= self.client_timeout]
+            for client_id in expired:
+                self.clients.pop(client_id, None)
+
+            if self.clients:
+                self.empty_since = None
+                return False
+            if not self.had_client:
+                return False
+            if self.empty_since is None:
+                self.empty_since = current
+                return False
+            return current - self.empty_since >= self.empty_grace
+
+
+class VideoToolServer(ThreadingHTTPServer):
+    def __init__(self, server_address: tuple[str, int], lifecycle: ServiceLifecycle | None = None) -> None:
+        super().__init__(server_address, VideoToolHandler)
+        self.lifecycle = lifecycle or ServiceLifecycle()
+        self._lifecycle_stop = threading.Event()
+        self._lifecycle_thread: threading.Thread | None = None
+
+    def start_lifecycle_monitor(self) -> None:
+        self._lifecycle_thread = threading.Thread(target=self._monitor_lifecycle, daemon=True)
+        self._lifecycle_thread.start()
+
+    def stop_lifecycle_monitor(self) -> None:
+        self._lifecycle_stop.set()
+
+    def _monitor_lifecycle(self) -> None:
+        while not self._lifecycle_stop.wait(0.5):
+            if self.lifecycle.should_shutdown() and not _has_active_jobs():
+                print("No browser pages remain; stopping the local web service.")
+                self.shutdown()
+                return
 
 
 class VideoToolHandler(BaseHTTPRequestHandler):
@@ -81,6 +146,10 @@ class VideoToolHandler(BaseHTTPRequestHandler):
             with STATE.lock:
                 payload = [asdict(job) for job in STATE.jobs]
             self._send_json(payload)
+            return
+        if parsed.path == "/service-events":
+            query = parse_qs(parsed.query)
+            self._handle_service_events(query.get("client_id", [""])[0])
             return
         if parsed.path == "/choose-file":
             query = parse_qs(parsed.query)
@@ -127,6 +196,9 @@ class VideoToolHandler(BaseHTTPRequestHandler):
             return
 
         data = self._read_form()
+        if parsed.path == "/service-client":
+            self._handle_service_client(data)
+            return
         if parsed.path == "/preview-frame":
             self._handle_preview(data)
             return
@@ -185,6 +257,51 @@ class VideoToolHandler(BaseHTTPRequestHandler):
             languages=_value(data, "target_language") or _value(data, "languages") or "en",
             details=_job_details(action, data),
         )
+
+    def _handle_service_client(self, data: dict[str, list[str]]) -> None:
+        client_id = _value(data, "client_id").strip()
+        action = _value(data, "action") or "heartbeat"
+        if not SERVICE_CLIENT_ID_PATTERN.fullmatch(client_id):
+            self._send_json({"ok": False, "error": "invalid service client id"}, status=400)
+            return
+        lifecycle = getattr(self.server, "lifecycle", None)
+        if lifecycle is None:
+            self._send_json({"ok": False, "error": "service lifecycle unavailable"}, status=503)
+            return
+        if action == "heartbeat":
+            lifecycle.heartbeat(client_id)
+        elif action == "disconnect":
+            lifecycle.disconnect(client_id)
+        else:
+            self._send_json({"ok": False, "error": "invalid service client action"}, status=400)
+            return
+        self._send_json({"ok": True})
+
+    def _handle_service_events(self, client_id: str) -> None:
+        client_id = client_id.strip()
+        if not SERVICE_CLIENT_ID_PATTERN.fullmatch(client_id):
+            self._send_json({"ok": False, "error": "invalid service client id"}, status=400)
+            return
+        lifecycle = getattr(self.server, "lifecycle", None)
+        if lifecycle is None:
+            self._send_json({"ok": False, "error": "service lifecycle unavailable"}, status=503)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        try:
+            while True:
+                lifecycle.heartbeat(client_id)
+                self.wfile.write(b": service-alive\n\n")
+                self.wfile.flush()
+                time.sleep(2.0)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            lifecycle.disconnect(client_id)
 
     def _handle_preview(self, data: dict[str, list[str]]) -> None:
         try:
@@ -432,6 +549,11 @@ def _run_job(job_id: int, data: dict[str, list[str]]) -> None:
         _update_job(job_id, status="failed", error=f"{exc}\n{traceback.format_exc()}")
 
 
+def _has_active_jobs() -> bool:
+    with STATE.lock:
+        return any(job.status in {"queued", "running"} for job in STATE.jobs)
+
+
 def _run_generate_english(job_id: int, data: dict[str, list[str]]) -> None:
     video = Path(_value(data, "video_path")).expanduser()
     subtitle_dir = Path(_value(data, "subtitle_dir")).expanduser() if _value(data, "subtitle_dir") else None
@@ -615,7 +737,9 @@ def render_page(message: str = "") -> str:
     if not rows:
         rows = '<tr><td colspan="9" class="muted" data-i18n data-en="No jobs yet." data-zh="暂无任务。">No jobs yet.</td></tr>'
     message_html = f'<div id="job-notice" class="notice" role="status" aria-live="polite">{html.escape(message)}</div>' if message else '<div id="job-notice" class="notice" role="status" aria-live="polite" hidden></div>'
-    return PAGE_TEMPLATE.replace("__MESSAGE__", message_html).replace("__ROWS__", rows)
+    return PAGE_TEMPLATE.replace("__MESSAGE__", message_html).replace("__ROWS__", rows).replace(
+        "__SERVICE_CLIENT_SCRIPT__", SERVICE_CLIENT_SCRIPT
+    )
 
 
 def render_editor(source: str, target: str, prefill: bool = False) -> str:
@@ -642,13 +766,16 @@ def render_editor(source: str, target: str, prefill: bool = False) -> str:
         "__TARGET__", html.escape(str(target_path))
     ).replace("__ROWS__", "\n".join(rows)).replace("__COUNT__", str(len(entries))).replace(
         "__EDITOR_TITLE_EN__", "Edit Existing Subtitle" if prefill else "Manual Subtitle Translation"
-    ).replace("__EDITOR_TITLE_ZH__", "在线编辑已有字幕" if prefill else "手动字幕翻译")
+    ).replace("__EDITOR_TITLE_ZH__", "在线编辑已有字幕" if prefill else "手动字幕翻译").replace(
+        "__SERVICE_CLIENT_SCRIPT__", SERVICE_CLIENT_SCRIPT
+    )
 
 
 def render_error_page(message: str, details: str) -> str:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Error</title></head>
-<body><main><h1>Error</h1><p>{html.escape(message)}</p><pre>{html.escape(details)}</pre><p><a href="/">Back</a></p></main></body></html>"""
+<body><main><h1>Error</h1><p>{html.escape(message)}</p><pre>{html.escape(details)}</pre><p><a href="/">Back</a></p></main>
+<script>{SERVICE_CLIENT_SCRIPT}</script></body></html>"""
 
 
 def render_shutdown_page() -> str:
@@ -684,6 +811,52 @@ def render_job_row(job: JobRecord) -> str:
         details=html.escape(job.details),
         error=html.escape(job.error),
     )
+
+
+SERVICE_CLIENT_SCRIPT = r"""
+    const SERVICE_CLIENT_ID = window.crypto && typeof window.crypto.randomUUID === 'function'
+      ? window.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    function serviceClientBody(action) {
+      return new URLSearchParams({ client_id: SERVICE_CLIENT_ID, action });
+    }
+
+    function heartbeatServiceClient() {
+      return fetch('/service-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: serviceClientBody('heartbeat'),
+        keepalive: true
+      }).catch(() => {});
+    }
+
+    function disconnectServiceClient() {
+      const body = serviceClientBody('disconnect');
+      if (navigator.sendBeacon && navigator.sendBeacon('/service-client', body)) return;
+      fetch('/service-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body,
+        keepalive: true
+      }).catch(() => {});
+    }
+
+    const serviceEventSource = typeof EventSource === 'function'
+      ? new EventSource(`/service-events?client_id=${encodeURIComponent(SERVICE_CLIENT_ID)}`)
+      : null;
+    heartbeatServiceClient();
+    setInterval(heartbeatServiceClient, 10000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') heartbeatServiceClient();
+    });
+    window.addEventListener('pagehide', (event) => {
+      if (!event.persisted) {
+        if (serviceEventSource) serviceEventSource.close();
+        disconnectServiceClient();
+      }
+    });
+"""
 
 
 PAGE_TEMPLATE = """<!doctype html>
@@ -1264,6 +1437,7 @@ PAGE_TEMPLATE = """<!doctype html>
       }
     }
 
+    __SERVICE_CLIENT_SCRIPT__
     const pageParams = new URLSearchParams(window.location.search);
     if (watchedJobId) showNotice(formatText('jobStarted', { id: watchedJobId }));
     if (pageParams.get('saved')) showNotice(formatText('saved', { path: pageParams.get('saved') }));
@@ -1400,6 +1574,7 @@ EDITOR_TEMPLATE = """<!doctype html>
       button.disabled = true;
       button.textContent = currentLanguage === 'zh' ? '保存中...' : 'Saving...';
     }
+    __SERVICE_CLIENT_SCRIPT__
     applyLanguage(currentLanguage);
   </script>
 </body>
@@ -1407,14 +1582,18 @@ EDITOR_TEMPLATE = """<!doctype html>
 
 
 def run(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = False) -> None:
-    server = ThreadingHTTPServer((host, port), VideoToolHandler)
+    server = VideoToolServer((host, port))
     url = f"http://{host}:{port}/"
     print(f"Barbara-Video-Subtitle-Studio web UI: {url}")
     print("Press Ctrl+C to stop, or click Close Service in the browser.")
     if open_browser:
         webbrowser.open(url)
+    server.start_lifecycle_monitor()
     try:
         server.serve_forever()
+    except KeyboardInterrupt:
+        pass
     finally:
+        server.stop_lifecycle_monitor()
         server.server_close()
         print("Barbara-Video-Subtitle-Studio web UI stopped.")

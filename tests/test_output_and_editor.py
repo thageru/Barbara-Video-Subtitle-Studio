@@ -3,14 +3,15 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from video_tool.chinese import to_simplified_chinese
 from video_tool.paths import media_stem, organized_output_path, output_directory
 from video_tool.processor import ProcessingRequest, SubtitleStyle, process_video, render_subtitle_preview
 from video_tool.srt import parse_srt, write_manual_translation
 from video_tool.translator import build_webchat_prompt, merge_webchat_translation
-from video_tool.web import _srt_timestamp_seconds, render_editor, render_page
+from video_tool.web import ServiceLifecycle, VideoToolHandler, _srt_timestamp_seconds, render_editor, render_error_page, render_page
 
 
 class OutputAndEditorTests(unittest.TestCase):
@@ -79,6 +80,67 @@ class OutputAndEditorTests(unittest.TestCase):
         self.assertIn("prefers-reduced-motion", page)
         self.assertIn("watchedJobId", page)
         self.assertIn("在线编辑已有字幕", page)
+        self.assertIn("/service-client", page)
+        self.assertIn("/service-events", page)
+
+    def test_editor_registers_service_client(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            subtitle = Path(temp_name) / "lesson.srt"
+            subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nText\n", encoding="utf-8")
+
+            page = render_editor(str(subtitle), str(subtitle), prefill=True)
+
+            self.assertIn("heartbeatServiceClient", page)
+            self.assertIn("disconnectServiceClient", page)
+            self.assertIn("/service-events", page)
+
+    def test_error_page_keeps_service_client_alive(self) -> None:
+        page = render_error_page("Missing subtitle", "details")
+
+        self.assertIn("/service-events", page)
+
+    def test_service_lifecycle_waits_for_last_client_and_grace_period(self) -> None:
+        lifecycle = ServiceLifecycle(client_timeout=30.0, empty_grace=3.0)
+        lifecycle.heartbeat("tab-a", now=0.0)
+        lifecycle.heartbeat("tab-b", now=0.0)
+
+        lifecycle.disconnect("tab-a", now=1.0)
+        self.assertFalse(lifecycle.should_shutdown(now=10.0))
+
+        lifecycle.disconnect("tab-b", now=11.0)
+        self.assertFalse(lifecycle.should_shutdown(now=13.9))
+        self.assertTrue(lifecycle.should_shutdown(now=14.0))
+
+    def test_service_lifecycle_allows_reload_to_reconnect(self) -> None:
+        lifecycle = ServiceLifecycle(client_timeout=30.0, empty_grace=3.0)
+        lifecycle.heartbeat("old-page", now=0.0)
+        lifecycle.disconnect("old-page", now=1.0)
+        lifecycle.heartbeat("reloaded-page", now=2.0)
+
+        self.assertFalse(lifecycle.should_shutdown(now=10.0))
+
+    def test_service_lifecycle_expires_crashed_client(self) -> None:
+        lifecycle = ServiceLifecycle(client_timeout=30.0, empty_grace=3.0)
+        lifecycle.heartbeat("crashed-tab", now=0.0)
+
+        self.assertFalse(lifecycle.should_shutdown(now=30.0))
+        self.assertTrue(lifecycle.should_shutdown(now=33.0))
+
+    def test_service_event_disconnect_removes_client(self) -> None:
+        lifecycle = ServiceLifecycle()
+        handler = object.__new__(VideoToolHandler)
+        handler.server = SimpleNamespace(lifecycle=lifecycle)
+        handler.wfile = Mock()
+        handler.wfile.write.side_effect = [None, BrokenPipeError()]
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+
+        with patch("video_tool.web.time.sleep"):
+            handler._handle_service_events("browser-tab")
+
+        self.assertTrue(lifecycle.had_client)
+        self.assertEqual(lifecycle.clients, {})
 
     def test_webchat_prompt_contains_template_and_complete_srt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:

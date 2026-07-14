@@ -132,6 +132,13 @@ const copy = {
     editAction: '打开在线编辑器',
     noJobs: '暂无任务。',
     working: '处理中...',
+    stopping: '正在关闭...',
+    stopConfirmTitle: '关闭本地服务？',
+    stopConfirmBody: '服务停止后，当前任务和页面操作会立即中断。关闭最后一个页面时，系统会改为等待运行中的任务结束后自动退出。',
+    cancel: '取消',
+    confirmStop: '确认关闭',
+    stoppedTitle: '本地服务已停止',
+    stoppedBody: '后台监听已经关闭，当前页面不再提供操作。现在可以安全关闭此标签页。',
     jobStarted: (id: number) => `任务 ${id} 已开始。`,
     jobDone: (id: number) => `任务 ${id} 已完成。`,
     jobFailed: (id: number, error: string) => `任务 ${id} 失败：${error}`,
@@ -195,6 +202,13 @@ const copy = {
     editAction: 'Open online editor',
     noJobs: 'No jobs yet.',
     working: 'Working...',
+    stopping: 'Stopping...',
+    stopConfirmTitle: 'Stop the local service?',
+    stopConfirmBody: 'Stopping now immediately interrupts active tasks and page actions. Closing the final page instead waits for running tasks to finish before exiting.',
+    cancel: 'Cancel',
+    confirmStop: 'Stop service',
+    stoppedTitle: 'Local service stopped',
+    stoppedBody: 'The local listener has stopped and this page is no longer interactive. You can safely close this tab.',
     jobStarted: (id: number) => `Job ${id} started.`,
     jobDone: (id: number) => `Job ${id} completed.`,
     jobFailed: (id: number, error: string) => `Job ${id} failed: ${error}`,
@@ -227,6 +241,17 @@ function translatedSrtPath(path: string) {
   if (path.endsWith('.en.srt')) return `${path.slice(0, -7)}.zh-Hans.srt`
   if (path.endsWith('.srt')) return `${path.slice(0, -4)}.zh-Hans.srt`
   return `${path}.zh-Hans.srt`
+}
+
+function createServiceClientId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') return globalThis.crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+const SERVICE_CLIENT_ID = createServiceClientId()
+
+function serviceClientBody(action: 'heartbeat' | 'disconnect') {
+  return new URLSearchParams({ client_id: SERVICE_CLIENT_ID, action })
 }
 
 function Field({ label, required, children }: { label: string; required?: boolean; children: ReactNode }) {
@@ -307,6 +332,9 @@ export default function App() {
   const [videoFailed, setVideoFailed] = useState(false)
   const [notice, setNotice] = useState<Notice>(null)
   const [busyKey, setBusyKey] = useState('')
+  const [serviceStopping, setServiceStopping] = useState(false)
+  const [serviceStopped, setServiceStopped] = useState(false)
+  const [shutdownConfirmOpen, setShutdownConfirmOpen] = useState(false)
   const [jobs, setJobs] = useState<Job[]>([])
   const [previewUrl, setPreviewUrl] = useState('')
   const [previewCues, setPreviewCues] = useState<SubtitleCue[]>([])
@@ -368,6 +396,49 @@ export default function App() {
     return () => window.clearTimeout(timeout)
   }, [notice])
 
+  useEffect(() => {
+    if (serviceStopped) return
+
+    const heartbeat = () =>
+      fetch('/service-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: serviceClientBody('heartbeat'),
+        keepalive: true,
+      }).catch(() => undefined)
+
+    const disconnect = (event: PageTransitionEvent) => {
+      if (event.persisted) return
+      serviceEvents?.close()
+      const body = serviceClientBody('disconnect')
+      if (navigator.sendBeacon?.('/service-client', body)) return
+      void fetch('/service-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body,
+        keepalive: true,
+      }).catch(() => undefined)
+    }
+
+    const heartbeatWhenVisible = () => {
+      if (document.visibilityState === 'visible') void heartbeat()
+    }
+
+    const serviceEvents = typeof EventSource === 'function'
+      ? new EventSource(`/service-events?client_id=${encodeURIComponent(SERVICE_CLIENT_ID)}`)
+      : null
+    void heartbeat()
+    const timer = window.setInterval(() => void heartbeat(), 10000)
+    window.addEventListener('pagehide', disconnect)
+    document.addEventListener('visibilitychange', heartbeatWhenVisible)
+    return () => {
+      serviceEvents?.close()
+      window.clearInterval(timer)
+      window.removeEventListener('pagehide', disconnect)
+      document.removeEventListener('visibilitychange', heartbeatWhenVisible)
+    }
+  }, [serviceStopped])
+
   const loadJobs = useCallback(async () => {
     try {
       const response = await fetch('/jobs.json', { headers: { Accept: 'application/json' } })
@@ -397,10 +468,11 @@ export default function App() {
   }, [language])
 
   useEffect(() => {
+    if (serviceStopped) return
     void loadJobs()
     const timer = window.setInterval(() => void loadJobs(), 3000)
     return () => window.clearInterval(timer)
-  }, [loadJobs])
+  }, [loadJobs, serviceStopped])
 
   useEffect(() => {
     setActiveSubtitle('')
@@ -628,9 +700,18 @@ export default function App() {
   }
 
   const shutdown = async () => {
-    if (!window.confirm(language === 'zh' ? '现在关闭本地服务吗？' : 'Close the local service now?')) return
-    await fetch('/shutdown', { method: 'POST', headers: { Accept: 'application/json' } })
-    setNotice({ kind: 'info', message: language === 'zh' ? '本地服务已关闭。' : 'The local service has stopped.' })
+    setServiceStopping(true)
+    setNotice(null)
+    try {
+      const response = await fetch('/shutdown', { method: 'POST', headers: { Accept: 'application/json' } })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      setShutdownConfirmOpen(false)
+      setServiceStopped(true)
+    } catch (error) {
+      setNotice({ kind: 'error', message: language === 'zh' ? `关闭服务失败：${String(error)}` : `Failed to stop service: ${String(error)}` })
+    } finally {
+      setServiceStopping(false)
+    }
   }
 
   const selectView = (view: ViewId) => {
@@ -1015,6 +1096,22 @@ export default function App() {
     )
   }
 
+  if (serviceStopped) {
+    return (
+      <div className="relative grid min-h-dvh place-items-center overflow-hidden bg-[#0b1114] px-6 text-white">
+        <div className="fixed inset-0 bg-[#10191c]" aria-hidden="true" />
+        <main className="relative z-10 flex max-w-xl flex-col items-center text-center">
+          <span className="liquid-glass mb-6 grid h-16 w-16 place-items-center rounded-2xl text-accent">
+            <Power size={28} strokeWidth={1.5} />
+          </span>
+          <p className="mb-3 text-xs font-medium text-accent/80">BARBARA VIDEO SUBTITLE STUDIO</p>
+          <h1 className="text-3xl font-medium leading-tight sm:text-4xl">{text.stoppedTitle}</h1>
+          <p className="mt-4 max-w-md text-sm leading-6 text-white/58 sm:text-base">{text.stoppedBody}</p>
+        </main>
+      </div>
+    )
+  }
+
   return (
     <div className="relative min-h-dvh w-full overflow-x-hidden bg-[#0b1114] text-white lg:h-screen lg:overflow-hidden">
       {!videoFailed ? (
@@ -1062,9 +1159,9 @@ export default function App() {
           <button type="button" onClick={() => setLanguage((current) => (current === 'zh' ? 'en' : 'zh'))} className="liquid-glass min-h-11 rounded-full px-4 text-sm font-medium text-white transition-colors hover:bg-white/10">
             {text.language}
           </button>
-          <button type="button" onClick={() => void shutdown()} className="inline-flex min-h-11 items-center gap-2 rounded-full bg-white px-4 text-sm font-medium text-black transition-colors hover:bg-white/90">
-            <Power size={16} />
-            {text.shutdown}
+          <button type="button" onClick={() => setShutdownConfirmOpen(true)} disabled={serviceStopping} className="inline-flex min-h-11 items-center gap-2 rounded-full bg-white px-4 text-sm font-medium text-black transition-colors hover:bg-white/90 disabled:cursor-wait disabled:opacity-60">
+            {serviceStopping ? <LoaderCircle size={16} className="animate-spin" /> : <Power size={16} />}
+            {serviceStopping ? text.stopping : text.shutdown}
           </button>
         </div>
 
@@ -1094,7 +1191,7 @@ export default function App() {
           ))}
           <div className="mt-2 grid grid-cols-2 gap-2 border-t border-white/10 pt-3">
             <button type="button" onClick={() => setLanguage((current) => (current === 'zh' ? 'en' : 'zh'))} className="liquid-glass min-h-11 rounded-full text-sm font-medium text-white">{text.language}</button>
-            <button type="button" onClick={() => void shutdown()} className="min-h-11 rounded-full bg-white text-sm font-medium text-black">{text.shutdown}</button>
+            <button type="button" onClick={() => { setMenuOpen(false); setShutdownConfirmOpen(true) }} disabled={serviceStopping} className="min-h-11 rounded-full bg-white text-sm font-medium text-black disabled:cursor-wait disabled:opacity-60">{serviceStopping ? text.stopping : text.shutdown}</button>
           </div>
         </div>
       ) : null}
@@ -1151,6 +1248,29 @@ export default function App() {
           {notice.kind === 'error' ? <AlertTriangle size={18} className="mt-0.5 flex-none" /> : <CheckCircle2 size={18} className="mt-0.5 flex-none" />}
           <span className="min-w-0 break-words">{notice.message}</span>
           <button type="button" onClick={() => setNotice(null)} className="ml-auto grid h-8 w-8 flex-none place-items-center rounded-lg text-white/60 hover:bg-white/10 hover:text-white" aria-label="Dismiss notification"><X size={15} /></button>
+        </div>
+      ) : null}
+
+      {shutdownConfirmOpen ? (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/65 px-4" role="presentation">
+          <section className="liquid-glass-strong w-full max-w-md rounded-lg p-5 shadow-glass sm:p-6" role="dialog" aria-modal="true" aria-labelledby="shutdown-title" aria-describedby="shutdown-description">
+            <div className="flex items-start gap-3">
+              <span className="liquid-glass grid h-11 w-11 flex-none place-items-center rounded-lg text-amber-200">
+                <AlertTriangle size={20} strokeWidth={1.7} />
+              </span>
+              <div className="min-w-0">
+                <h2 id="shutdown-title" className="text-lg font-medium text-white">{text.stopConfirmTitle}</h2>
+                <p id="shutdown-description" className="mt-2 text-sm leading-6 text-white/62">{text.stopConfirmBody}</p>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => setShutdownConfirmOpen(false)} disabled={serviceStopping} className="liquid-glass min-h-11 rounded-full px-5 text-sm font-medium text-white transition-colors hover:bg-white/10 disabled:opacity-50">{text.cancel}</button>
+              <button type="button" onClick={() => void shutdown()} disabled={serviceStopping} className="inline-flex min-h-11 items-center gap-2 rounded-full bg-white px-5 text-sm font-medium text-black transition-colors hover:bg-white/90 disabled:cursor-wait disabled:opacity-60">
+                {serviceStopping ? <LoaderCircle size={16} className="animate-spin" /> : <Power size={16} />}
+                {serviceStopping ? text.stopping : text.confirmStop}
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
     </div>
