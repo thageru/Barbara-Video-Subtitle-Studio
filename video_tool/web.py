@@ -60,7 +60,7 @@ SERVICE_CLIENT_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 @dataclass
 class ServiceLifecycle:
     client_timeout: float = 90.0
-    empty_grace: float = 3.0
+    empty_grace: float = 8.0
     clients: dict[str, float] = field(default_factory=dict)
     had_client: bool = False
     empty_since: float | None = None
@@ -292,16 +292,17 @@ class VideoToolHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
+        connection_id = f"{client_id}:stream:{id(self)}"
         try:
             while True:
-                lifecycle.heartbeat(client_id)
+                lifecycle.heartbeat(connection_id)
                 self.wfile.write(b": service-alive\n\n")
                 self.wfile.flush()
                 time.sleep(2.0)
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
-            lifecycle.disconnect(client_id)
+            lifecycle.disconnect(connection_id)
 
     def _handle_preview(self, data: dict[str, list[str]]) -> None:
         try:
@@ -845,15 +846,15 @@ SERVICE_CLIENT_SCRIPT = r"""
     const serviceEventSource = typeof EventSource === 'function'
       ? new EventSource(`/service-events?client_id=${encodeURIComponent(SERVICE_CLIENT_ID)}`)
       : null;
-    heartbeatServiceClient();
-    setInterval(heartbeatServiceClient, 10000);
+    if (!serviceEventSource) heartbeatServiceClient();
+    if (!serviceEventSource) setInterval(heartbeatServiceClient, 10000);
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') heartbeatServiceClient();
+      if (!serviceEventSource && document.visibilityState === 'visible') heartbeatServiceClient();
     });
     window.addEventListener('pagehide', (event) => {
       if (!event.persisted) {
         if (serviceEventSource) serviceEventSource.close();
-        disconnectServiceClient();
+        else disconnectServiceClient();
       }
     });
 """

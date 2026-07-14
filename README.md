@@ -45,7 +45,7 @@ export FFMPEG_BIN=/path/to/ffmpeg
 
 在 macOS Finder 中双击项目根目录里的 `Barbara-Video-Subtitle-Studio.command`。启动器会自动选择项目自带的 Python 虚拟环境（如果存在），否则使用系统 Python，并打开本地工作台。
 
-本分支已经附带编译好的 React 前端，因此普通用户不需要安装 Node.js 或 npm。启动器会在缺少 `ffmpeg` 或 `whisperkit-cli` 时给出清晰提示；字幕生成、预览和视频导出分别需要这些工具。
+项目仓库已经附带编译好的 React 前端，因此普通用户不需要安装 Node.js 或 npm。启动器会在缺少 `ffmpeg` 或 `whisperkit-cli` 时给出清晰提示；字幕生成、预览和视频导出分别需要这些工具。
 
 如果 macOS 第一次阻止打开，请右键该文件并选择“打开”。终端窗口请保持打开；点击页面右上角的 `Close Service` 会立即停止服务，关闭最后一个工作台页面也会自动停止服务。
 

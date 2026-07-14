@@ -100,7 +100,7 @@ class OutputAndEditorTests(unittest.TestCase):
         self.assertIn("/service-events", page)
 
     def test_service_lifecycle_waits_for_last_client_and_grace_period(self) -> None:
-        lifecycle = ServiceLifecycle(client_timeout=30.0, empty_grace=3.0)
+        lifecycle = ServiceLifecycle(client_timeout=30.0, empty_grace=8.0)
         lifecycle.heartbeat("tab-a", now=0.0)
         lifecycle.heartbeat("tab-b", now=0.0)
 
@@ -108,11 +108,11 @@ class OutputAndEditorTests(unittest.TestCase):
         self.assertFalse(lifecycle.should_shutdown(now=10.0))
 
         lifecycle.disconnect("tab-b", now=11.0)
-        self.assertFalse(lifecycle.should_shutdown(now=13.9))
-        self.assertTrue(lifecycle.should_shutdown(now=14.0))
+        self.assertFalse(lifecycle.should_shutdown(now=18.9))
+        self.assertTrue(lifecycle.should_shutdown(now=19.0))
 
     def test_service_lifecycle_allows_reload_to_reconnect(self) -> None:
-        lifecycle = ServiceLifecycle(client_timeout=30.0, empty_grace=3.0)
+        lifecycle = ServiceLifecycle(client_timeout=30.0, empty_grace=8.0)
         lifecycle.heartbeat("old-page", now=0.0)
         lifecycle.disconnect("old-page", now=1.0)
         lifecycle.heartbeat("reloaded-page", now=2.0)
@@ -120,11 +120,11 @@ class OutputAndEditorTests(unittest.TestCase):
         self.assertFalse(lifecycle.should_shutdown(now=10.0))
 
     def test_service_lifecycle_expires_crashed_client(self) -> None:
-        lifecycle = ServiceLifecycle(client_timeout=30.0, empty_grace=3.0)
+        lifecycle = ServiceLifecycle(client_timeout=30.0, empty_grace=8.0)
         lifecycle.heartbeat("crashed-tab", now=0.0)
 
         self.assertFalse(lifecycle.should_shutdown(now=30.0))
-        self.assertTrue(lifecycle.should_shutdown(now=33.0))
+        self.assertTrue(lifecycle.should_shutdown(now=38.0))
 
     def test_service_event_disconnect_removes_client(self) -> None:
         lifecycle = ServiceLifecycle()
@@ -141,6 +141,16 @@ class OutputAndEditorTests(unittest.TestCase):
 
         self.assertTrue(lifecycle.had_client)
         self.assertEqual(lifecycle.clients, {})
+
+    def test_reconnected_service_stream_is_not_removed_by_old_stream(self) -> None:
+        lifecycle = ServiceLifecycle(client_timeout=30.0, empty_grace=8.0)
+        lifecycle.heartbeat("tab:stream:old", now=0.0)
+        lifecycle.heartbeat("tab:stream:new", now=1.0)
+
+        lifecycle.disconnect("tab:stream:old", now=2.0)
+
+        self.assertEqual(set(lifecycle.clients), {"tab:stream:new"})
+        self.assertFalse(lifecycle.should_shutdown(now=20.0))
 
     def test_webchat_prompt_contains_template_and_complete_srt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:

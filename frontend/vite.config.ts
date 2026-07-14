@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react'
 
 const apiRoutes = [
   '/jobs.json',
+  '/service-client',
+  '/service-events',
   '/choose-file',
   '/choose-directory',
   '/media',

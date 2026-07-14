@@ -410,6 +410,7 @@ export default function App() {
     const disconnect = (event: PageTransitionEvent) => {
       if (event.persisted) return
       serviceEvents?.close()
+      if (serviceEvents) return
       const body = serviceClientBody('disconnect')
       if (navigator.sendBeacon?.('/service-client', body)) return
       void fetch('/service-client', {
@@ -421,19 +422,19 @@ export default function App() {
     }
 
     const heartbeatWhenVisible = () => {
-      if (document.visibilityState === 'visible') void heartbeat()
+      if (!serviceEvents && document.visibilityState === 'visible') void heartbeat()
     }
 
     const serviceEvents = typeof EventSource === 'function'
       ? new EventSource(`/service-events?client_id=${encodeURIComponent(SERVICE_CLIENT_ID)}`)
       : null
-    void heartbeat()
-    const timer = window.setInterval(() => void heartbeat(), 10000)
+    if (!serviceEvents) void heartbeat()
+    const timer = serviceEvents ? 0 : window.setInterval(() => void heartbeat(), 10000)
     window.addEventListener('pagehide', disconnect)
     document.addEventListener('visibilitychange', heartbeatWhenVisible)
     return () => {
       serviceEvents?.close()
-      window.clearInterval(timer)
+      if (timer) window.clearInterval(timer)
       window.removeEventListener('pagehide', disconnect)
       document.removeEventListener('visibilitychange', heartbeatWhenVisible)
     }
@@ -1198,8 +1199,8 @@ export default function App() {
 
       <main className="relative z-20 mx-auto grid min-h-dvh w-full max-w-[1600px] gap-8 px-4 pb-8 pt-24 sm:px-8 lg:h-screen lg:grid-cols-[minmax(300px,0.8fr)_minmax(560px,1.2fr)] lg:items-end lg:gap-12 lg:px-12 lg:pb-10 lg:pt-28">
         <section className="flex max-w-xl flex-col justify-end pb-2 lg:pb-8">
-          <p className="mb-3 text-xs font-medium tracking-[0.18em] text-accent/80">{text.eyebrow}</p>
-          <h1 className="mb-4 text-4xl font-medium leading-[1.05] tracking-tight text-white sm:text-5xl lg:text-6xl">{text.heroTitle}</h1>
+          <p className="mb-3 text-xs font-medium text-accent/80">{text.eyebrow}</p>
+          <h1 className="mb-4 text-4xl font-medium leading-[1.05] text-white sm:text-5xl lg:text-6xl">{text.heroTitle}</h1>
           <p className="mb-7 max-w-lg text-sm leading-6 text-white/65 sm:text-base">{text.heroBody}</p>
           <div className="flex flex-wrap items-center gap-3">
             <button type="button" onClick={() => selectView('generate')} className="min-h-11 rounded-full bg-white px-6 text-sm font-medium text-black transition-colors hover:bg-white/90 sm:px-7 sm:text-base">{text.start}</button>
